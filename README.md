@@ -1,4 +1,6 @@
-# Databricks Solution Accelerator Template - MODIFY THIS README.md
+# Pulse - Databricks Solution Accelerator
+
+How for all things EKG/ECG on Databricks
 
 [![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
 [![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)

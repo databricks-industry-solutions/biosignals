@@ -68,8 +68,7 @@ function App() {
       <header className="mb-6">
         <h1 className="text-2xl font-bold">🫀 ECG/AFib | Biosignals on Databricks — triage → classify</h1>
         <p className="text-sm text-muted-foreground">
-          Synthetic 12-lead ECG: the 12 leads shown are the same 12 the batch job stores in{" "}
-          <Ext href={links?.schema}>Unity Catalog</Ext> and both models score · an{" "}
+          Synthetic 12-lead ECG lands in <Ext href={links?.schema}>Unity Catalog</Ext> · an{" "}
           <Ext href={links?.arrModel}><em>arr</em> model</Ext> triages abnormal rhythms · an{" "}
           <Ext href={links?.afibModel}><em>AFib</em> model</Ext> classifies the flagged. Live +
           batch, governed end-to-end.
@@ -79,11 +78,6 @@ function App() {
           <Ext href={links?.endpoints}>MLflow Model Serving</Ext> ·{" "}
           <Ext href={links?.dashboard}>AI/BI</Ext> · <Ext href={links?.dailyJob}>Lakeflow</Ext> ·{" "}
           <Ext href={links?.apps}>Databricks Apps</Ext>
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          A reference pattern, not a fixed pipeline: the catalog/schema are bundle variables and the
-          models, rhythm classes and lead count are set in <code>common/config.py</code>, so the same
-          generate → train → validate → promote → serve cycle adapts to other signals and models.
         </p>
       </header>
 

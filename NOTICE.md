@@ -3,11 +3,13 @@ Copyright (2025) Databricks, Inc.
 This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
 By using this repository and the notebooks within, you consent to Databricks collection and use of usage and tracking information in accordance with our privacy policy at www.databricks/privacypolicy.
 
-## How the data in this repository is generated
+## Where the data in this repository comes from
 
-This repository contains no data files. Every project generates synthetic data when its
-notebooks run, and writes it to tables in the user's own Unity Catalog catalog. No real patient
-data is used, stored or included.
+This repository contains no data files. Projects either generate synthetic data with their own
+code or read public-domain datasets when their notebooks run, and write the results to tables in
+the user's own Unity Catalog catalog. No identifiable patient data is used, stored or included.
+Each project's section below says where its data comes from; today every project generates
+synthetic data.
 
 `projects/ecg12-afib`:
 

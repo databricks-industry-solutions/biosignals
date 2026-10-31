@@ -16,7 +16,7 @@
 # MAGIC
 # MAGIC | Columns | Content |
 # MAGIC |---|---|
-# MAGIC | `batch_date`, `batch_inference_datetime_utc` | run date (DATE) + acquisition time as `dd-MM-yyyy HH:mm:ss` text (kept from the 8-lead tables) |
+# MAGIC | `batch_date`, `batch_inference_datetime_utc` | run date (DATE) + acquisition time as `dd-MM-yyyy HH:mm:ss` text |
 # MAGIC | `pseudo_patient_id`, `rhythm_label` | synthetic id + ground-truth rhythm (0 NSR, 1 AFib, 2 Other) |
 # MAGIC | `ecg1`..`ecg12` | one ARRAY<FLOAT> per lead, mV, 2500 samples at 250 Hz, in the order I, II, III, aVR, aVL, aVF, V1..V6 |
 # MAGIC | patient record | `mrn`, `age_years`, `sex`, `height_cm`, `weight_kg`, `bmi`, `bp_*_mmhg`, `acquisition_datetime_utc`, `heart_rate_bpm`, `sampling_rate_hz`, `n_leads`, `duration_s` |
@@ -102,10 +102,9 @@ schema = T.StructType(
     [
         T.StructField(config.BATCH_DATE_COL, T.DateType(), True, {"comment": "Run date of the daily batch"}),
         T.StructField("batch_inference_datetime_utc", T.StringType(), True,
-                      {"comment": "Acquisition time as dd-MM-yyyy HH:mm:ss text (UTC); the 8-lead tables' format"}),
+                      {"comment": "Acquisition time as dd-MM-yyyy HH:mm:ss text (UTC)"}),
         T.StructField(config.ID_COL, T.StringType(), True,
                       {"comment": patient_info.FIELD_SPECS[config.ID_COL][1]}),
-        # DOUBLE (not INT): the type of rhythm_label in the live 8-lead demo's tables too.
         T.StructField("rhythm_label", T.DoubleType(), True,
                       {"comment": "Ground-truth rhythm: 0 NSR, 1 AFib, 2 Other (sinus tachycardia)"}),
     ]

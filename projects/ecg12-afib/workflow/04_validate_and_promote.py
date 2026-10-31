@@ -26,7 +26,8 @@
 # MAGIC SETUP job stops before serving. Every outcome is recorded: an MLflow run with the thresholds and
 # MAGIC hold-out metrics, and tags on each model version (`validation_status`, `gate_result`,
 # MAGIC `holdout_*`). `validation_status` is `valid` or `invalid` (this model against its own
-# MAGIC thresholds): the workspace has a tag policy for that key that allows only those two values.
+# MAGIC thresholds), so it also works where a Unity Catalog tag policy restricts that key to those two
+# MAGIC values (Unity Catalog rejects any other value on a model version then).
 # MAGIC `gate_result` is `passed` or `failed` (both models, the result that decides promotion). The
 # MAGIC training notebooks set no `validation_status`: until this gate runs, the `challenger` alias is
 # MAGIC what marks a version as awaiting validation.
@@ -236,8 +237,8 @@ status = "passed" if passed else "failed"
 
 
 def validation_status(ok):
-    """``validation_status`` tag value. The workspace's tag policy for this key allows only
-    ``valid`` / ``invalid``, and Unity Catalog rejects any other value on a model version."""
+    """``validation_status`` tag value: only ``valid`` / ``invalid``, the values a Unity Catalog tag
+    policy on this key typically allows (Unity Catalog rejects any other value on a model version)."""
     return "valid" if ok else "invalid"
 
 

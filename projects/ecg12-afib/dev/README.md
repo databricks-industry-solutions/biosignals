@@ -9,11 +9,11 @@ only, and nothing in `workflow/`, `common/` or `app/` imports from here.
 `pytest` tests (pytest is a Python test runner) that run on your laptop only (Python 3.11; nothing
 runs them automatically and they are not deployed). They check code logic: the 12-lead formulas,
 the patient record, training-data splits, the validation gate promoting both models or neither,
-batch-scoring output, and that names come from config. They did **not** catch the two problems the
-first live deploy hit (a workspace tag policy rejecting a tag value, and serverless Spark workers
-without torch); those only showed up in live runs. The real pre-deployment check is a live run: the
-SETUP job, then one DAILY run, before unpausing the schedule. How to run them, why Python 3.11, and
-which tests are known to be out of date: [`tests/README.md`](tests/README.md).
+batch-scoring output, the dashboard's queries, and that names come from config. They run nothing in
+a workspace, so they cannot catch workspace-specific problems (a tag policy on a key the notebooks
+write, what the serverless environments install): the real pre-deployment check is a live run, the
+SETUP job, then one DAILY run, before unpausing the schedule. How to run them and why Python 3.11:
+[`tests/README.md`](tests/README.md).
 
 ## `signal_variety/analyze_signal_variety.py`
 

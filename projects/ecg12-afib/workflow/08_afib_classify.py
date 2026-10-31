@@ -5,31 +5,24 @@
 # MAGIC **DAILY job, task 3 of 3** (after `07_arr_triage`). Reads `arr_triaged_12l_<date>`, keeps the
 # MAGIC rows the triage model flagged (`arr_flag == 1`), scores them with **`bio_ecg12_afib@champion`**
 # MAGIC (all 12 leads, `(-1, 12, 2500)`), and writes that date's slice of the accumulating results
-# MAGIC table **`dailyOrweekly_arr_afib_inference_12l`** (read by the 12-lead dashboard and the app):
+# MAGIC table **`dailyOrweekly_arr_afib_inference_12l`** (read by the dashboard; the app links to it):
 # MAGIC
 # MAGIC * `afib_predictions_0` / `afib_predictions_1` = `[p_not_afib, p_afib]`, plus `afib_model_info`;
 # MAGIC * the patient record, `rhythm_label`, the triage columns, and `batch_date`; the ECG arrays are
 # MAGIC   dropped to keep the table small.
 # MAGIC
 # MAGIC **Re-run safe:** the date's rows are replaced in one Delta transaction (`replaceWhere` on
-# MAGIC `batch_date`), so re-running a date never duplicates rows. The live 8-lead demo's
-# MAGIC `dailyOrweekly_arr_afib_inference` is a different table and is never written to.
+# MAGIC `batch_date`), so re-running a date never duplicates rows; an existing table without
+# MAGIC `batch_date` is refused, never written to (`uc_io.write_date_slice`).
 # MAGIC
-# MAGIC **Distributed batch scoring, like `07_`:** the champion version is wrapped as an
-# MAGIC `mlflow.pyfunc.spark_udf` and the Spark workers score the flagged ECGs (`score_spark_udf` in
-# MAGIC `common/scoring.py`); the result array `[p_not_afib, p_afib]` becomes `afib_predictions_0` /
-# MAGIC `afib_predictions_1`. `champion` is resolved to a concrete version first; that exact version
-# MAGIC scores and is recorded in `afib_model_info`. **Batch path, not the endpoint:** the serving
-# MAGIC endpoints and their `*_payload` inference tables are not involved.
+# MAGIC **Scored on the driver, like `07_`** (`scoring.score_driver_side`): the champion version is
+# MAGIC loaded with `mlflow.pyfunc.load_model` and its output `[p_not_afib, p_afib]` becomes
+# MAGIC `afib_predictions_0` / `afib_predictions_1`. `champion` is resolved to a concrete version first;
+# MAGIC that exact version scores and is recorded in `afib_model_info`. **Batch path, not the endpoint:**
+# MAGIC the serving endpoints and their `*_payload` inference tables are not involved.
 # MAGIC
-# MAGIC **Scored on the driver** (`scoring.score_driver_side`, as in the gate). Spark-worker scoring
-# MAGIC (`scoring.score_spark_udf`) is an untested follow-up: its one serverless try (`env_manager="uv"` with
-# MAGIC the CPU torch index) failed on a fixable install setting (uv's index strategy took setuptools from the
-# MAGIC torch index), not on torch itself.
-# MAGIC
-# MAGIC **Compute:** standard serverless (CPU), base environment **ML v5** (same as `07_`; no %pip). The
-# MAGIC workers need torch, so, as in `07_`, spark_udf rebuilds the model's own environment with
-# MAGIC `env_manager="uv"` inside `scoring.torch_cpu_wheels()` (CPU build of torch).
+# MAGIC **Compute:** standard serverless (CPU), base environment **ML v5** (same as `07_`; no %pip).
+# MAGIC Parameters: `run_date`, `catalog_name` (required), `schema_name`.
 
 # COMMAND ----------
 
@@ -61,7 +54,7 @@ print(f"run_date: {run_date}\nread : {read_table}\nwrite: {results_table} ({conf
 
 # COMMAND ----------
 
-# DBTITLE 1,Resolve champion -> version, wrap exactly that version as a Spark UDF
+# DBTITLE 1,Resolve champion -> version, load exactly that version
 import mlflow
 from mlflow import MlflowClient
 

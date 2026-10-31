@@ -18,8 +18,8 @@
 # MAGIC re-running rewrites the same rows (as a new Delta version); the training notebooks record the
 # MAGIC version they read and the gate evaluates the hold-out split at that same version.
 # MAGIC
-# MAGIC The table is this demo's own: its name is not a daily-batch name (`batch_data_12l_<date>`,
-# MAGIC `arr_triaged_12l_<date>`) or the results table, and nothing of the live 8-lead demo is touched.
+# MAGIC The table is separate from the daily tables: its name is not a daily-batch name
+# MAGIC (`batch_data_12l_<date>`, `arr_triaged_12l_<date>`) or an accumulating results table.
 # MAGIC
 # MAGIC Columns: `sample_id`, `split`, `rhythm_label` (0 NSR, 1 AFib, 2 Other), `rhythm_name`,
 # MAGIC `heart_rate_bpm`, and `ecg1`..`ecg12` (one ARRAY<FLOAT> per lead, mV, 2500 samples at 250 Hz, in

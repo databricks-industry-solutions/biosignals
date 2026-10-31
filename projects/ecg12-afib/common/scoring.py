@@ -3,27 +3,20 @@ batch scoring (07_arr_triage, 08_afib_classify).
 
 * ``resolve_alias`` turns ``<model>@<alias>`` (``champion`` by default, ``challenger`` in the
   gate) into a concrete version. The notebooks load that exact version and record it, so the
-  recorded version is always the one that scored (the old notebooks scored with the alias but
-  recorded the latest version).
-* ``score_spark_udf`` (daily batch, 07_ / 08_) scores a Spark DataFrame on the Spark workers
-  with an ``mlflow.pyfunc.spark_udf`` of that version, so scoring is distributed over the
-  workers instead of collecting the batch to the driver. Each ECG's 12 per-lead columns go to
-  the model as one flattened array, which spark_udf reshapes to the model's (-1, 12, 2500)
-  tensor signature. The workers need torch: the ML base environment's packages reach the
-  driver but not the UDF workers on standard serverless (the first live run failed there with
-  "No module named 'torch'"), so ``UDF_ENV_MANAGER = "uv"`` makes spark_udf rebuild the
-  model's own logged environment (its requirements.txt, incl. torch) for the workers, inside
-  ``torch_cpu_wheels`` so torch is the CPU build. ``cap_arrow_batch_rows`` caps the ECGs per
-  model call (spark_udf calls the model once per Arrow batch).
-* ``score_driver_side`` (validation gate, 04_) predicts on the driver and joins the
-  predictions back by id. The gate scores the 200-row hold-out split on serverless GPU, whose
-  Spark workers do not have torch, and computes its metrics in pandas anyway.
+  recorded version is always the one that scored.
+* ``score_driver_side`` (the gate, 04_, and the daily batch, 07_ / 08_) predicts on the driver
+  and joins the predictions back by id. The batches are small (200 hold-out ECGs, ~100 a day).
+* ``score_spark_udf`` scores on the Spark workers with an ``mlflow.pyfunc.spark_udf`` of that
+  version instead (each ECG's 12 per-lead columns as one flattened array, reshaped by spark_udf
+  to the (-1, 12, 2500) signature; ``cap_arrow_batch_rows`` caps the ECGs per model call;
+  ``torch_cpu_wheels`` points the workers' environment build at PyTorch's CPU wheels). No job
+  uses it: it is tested locally only (README.md, "Future work").
 * Both return the same columns in the same order and types: the input columns (id first), the
   model's result columns (DOUBLE), then the ``*_model_info`` column.
 * ``arr_columns`` / ``afib_columns`` (driver side) and ``arr_udf_columns`` /
-  ``afib_udf_columns`` (spark_udf) read each model's output schema (kept from the 8-lead
-  models): ARR -> DataFrame[arr_prob, arr_flag]; AFib -> (n, 2) [p_not_afib, p_afib]. The
-  result column names are ``ARR_OUTPUT_COLS`` / ``AFIB_OUTPUT_COLS``.
+  ``afib_udf_columns`` (spark_udf) read each model's output schema: ARR ->
+  DataFrame[arr_prob, arr_flag]; AFib -> (n, 2) [p_not_afib, p_afib]. The result column names
+  are ``ARR_OUTPUT_COLS`` / ``AFIB_OUTPUT_COLS``.
 
 Only the ``score_*`` functions, ``cap_arrow_batch_rows`` and the ``*_udf_columns`` readers touch
 Spark, and import it lazily.
@@ -52,9 +45,7 @@ ARR_UDF_RESULT_TYPE = "arr_prob double, arr_flag double"
 AFIB_UDF_RESULT_TYPE = "array<double>"
 # spark_udf env_manager: "uv" rebuilds the model's logged environment (python_env.yaml +
 # requirements.txt: Python 3.12, mlflow, cloudpickle, torch, ...) with uv and runs the model in it
-# on the workers. On serverless (Databricks Connect), mlflow 3.8.1 builds that environment once on
-# the driver inside spark_udf and ships it to the workers as an archive. "local" (the task's own
-# environment) does not work there: the UDF workers do not get the ML base environment's torch.
+# on the workers ("local", the task's own environment, gives serverless UDF workers no torch).
 UDF_ENV_MANAGER = "uv"
 # PyTorch's CPU-only wheel index. The models log `torch==2.9.0`, which on Linux PyPI is the CUDA
 # build (plus GBs of nvidia-* wheels); a Spark UDF gets no GPU. The CPU wheel `2.9.0+cpu` also

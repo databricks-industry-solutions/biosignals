@@ -15,6 +15,7 @@
 # MAGIC        (train / val / holdout)         register @challenger     hold-out gate -> @champion    endpoints + *_payload tables
 # MAGIC DAILY  06_generate_batch_data ──> 07_arr_triage ──> 08_afib_classify ──> dashboard
 # MAGIC        batch_data_12l_<d>         arr_triaged_12l_<d>   dailyOrweekly_arr_afib_inference_12l
+# MAGIC                                   + arr_triage_history_12l
 # MAGIC ```
 
 # COMMAND ----------
@@ -42,8 +43,8 @@
 # MAGIC | `04_validate_and_promote` | **Gate:** score both challengers on `holdout`, check the thresholds, log the evaluation artifacts; both pass → `@champion` moves to them, else the job stops | serverless GPU (A10, AI v5) | SETUP → `validate_and_promote` (after 02 + 03) |
 # MAGIC | `05_serve_endpoints` | Create / update endpoints `bio_ecg12_arr` + `bio_ecg12_afib` at the champion versions, AI Gateway inference tables, smoke query | standard serverless | SETUP → `serve_endpoints` (after 04) |
 # MAGIC | `06_generate_batch_data` | One day's new synthetic 12-lead ECGs + synthetic patient records, acquisition times spread over the day → `batch_data_12l_<YYYYMMDD>` | standard serverless | DAILY → `simulate_incoming_batch` (simulated incoming data, not real ingestion) |
-# MAGIC | `07_arr_triage` | Score all 12 leads with `bio_ecg12_arr@champion` as a Spark UDF → `arr_prob`, `arr_flag` → `arr_triaged_12l_<YYYYMMDD>` | standard serverless (ML v5) | DAILY → `arr_triage` (after 06) |
-# MAGIC | `08_afib_classify` | Score the flagged rows with `bio_ecg12_afib@champion` as a Spark UDF → that date's rows of `dailyOrweekly_arr_afib_inference_12l` | standard serverless (ML v5) | DAILY → `afib_classify` (after 07) |
+# MAGIC | `07_arr_triage` | Score all 12 leads with `bio_ecg12_arr@champion` on the driver → `arr_prob`, `arr_flag` → `arr_triaged_12l_<YYYYMMDD>` + that date's rows of `arr_triage_history_12l` | standard serverless (ML v5) | DAILY → `arr_triage` (after 06) |
+# MAGIC | `08_afib_classify` | Score the flagged rows with `bio_ecg12_afib@champion` on the driver → that date's rows of `dailyOrweekly_arr_afib_inference_12l` | standard serverless (ML v5) | DAILY → `afib_classify` (after 07) |
 # MAGIC
 # MAGIC Run the SETUP job first (and again to retrain): the DAILY job scores with the champion models.
 
@@ -72,10 +73,8 @@
 # MAGIC matrix with raw counts, ROC and precision-recall curves, a per-class precision / recall / F1
 # MAGIC table and a README), and tags on each model version (training data version,
 # MAGIC `validation_status`, `gate_result`, `holdout_*`, `holdout_eval_artifacts`). `validation_status`
-# MAGIC is set by the gate only, to `valid` or `invalid`: the only values the workspace's tag policy for
-# MAGIC that key allows. Each endpoint has the same name as
-# MAGIC its model. (The first 12-lead run, in schema `ekg_afib`, used `arr_model_12l` / `afib_demo_12l`;
-# MAGIC those models and endpoints are left as they are.)
+# MAGIC is set by the gate only, to `valid` or `invalid`, so it also works where a Unity Catalog tag
+# MAGIC policy restricts that key to those two values. Each endpoint has the same name as its model.
 # MAGIC
 # MAGIC **Why the metrics sit near 1.0.** The synthetic rhythms are trivially separable by design: heart
 # MAGIC rate alone separates triage (the generator draws NSR at 60–100 bpm, AFib and Other at 100–160
@@ -143,20 +142,17 @@
 # MAGIC %md
 # MAGIC **Two data paths, two monitoring views.**
 # MAGIC
-# MAGIC * **Batch path** (DAILY job): `07_` and `08_` wrap the champion versions from Unity Catalog as
-# MAGIC   `mlflow.pyfunc.spark_udf`s and score on the Spark workers (`score_spark_udf` in
-# MAGIC   `common/scoring.py`), so scoring is distributed instead of collected to the driver; they never
-# MAGIC   call the endpoints. They run on standard serverless with the ML v5 environment; the workers
-# MAGIC   need torch, so spark_udf gives them the model's own logged environment, rebuilt with uv
-# MAGIC   (CPU build of torch). Results land in `arr_triaged_12l_<date>` and
-# MAGIC   `dailyOrweekly_arr_afib_inference_12l`.
+# MAGIC * **Batch path** (DAILY job): `07_` and `08_` load the champion versions from Unity Catalog and
+# MAGIC   score the day's batch on the driver (`scoring.score_driver_side`, as the gate does); they never
+# MAGIC   call the endpoints. They run on standard serverless with the ML v5 environment. Results land in
+# MAGIC   `arr_triaged_12l_<date>`, `arr_triage_history_12l` and `dailyOrweekly_arr_afib_inference_12l`.
 # MAGIC * **Live path** (the app): every *Triage → Classify* click calls the serving endpoints, which log
 # MAGIC   each request and response to their AI Gateway inference tables `bio_ecg12_arr_payload` and
 # MAGIC   `bio_ecg12_afib_payload` (one 12-lead ECG is ~650 KB of JSON, inside the 1 MiB logging limit).
 # MAGIC
-# MAGIC The 12-lead dashboard (`dashboards/build_ecg_demo_dashboard.py`) keeps them apart: a
-# MAGIC *Batch monitoring* section reads the batch tables, a *Live serving* section reads the payload
-# MAGIC tables.
+# MAGIC The AI/BI dashboard (`dashboards/ecg12_afib.lvdash.json`, generated by
+# MAGIC `dashboards/build_ecg_demo_dashboard.py`, deployed by the bundle) keeps them apart: a *Batch
+# MAGIC monitoring* section reads the batch tables, a *Live serving* section reads the payload tables.
 
 # COMMAND ----------
 
@@ -165,7 +161,7 @@
 # MAGIC
 # MAGIC | Module | What it holds |
 # MAGIC |---|---|
-# MAGIC | `config.py` | Every name and setting: catalog/schema, `N_LEADS = 12`, model + endpoint names, aliases, table names, training split, `TRAIN_PARAMS`, `VALIDATION_THRESHOLDS`, the batch-scoring partition size, the `run_date` parameter |
+# MAGIC | `config.py` | Every name and setting: the default schema (the catalog is a required job parameter), `N_LEADS = 12`, model + endpoint names, aliases, table names, training split, `TRAIN_PARAMS`, `VALIDATION_THRESHOLDS`, the `run_date` parameter |
 # MAGIC | `ecg_signal_gen.py` | The one ECG generator: leads I, II, V1–V6 synthesized; III, aVR, aVL, aVF derived. NSR / AFib / Other (sinus tachycardia), mV, 250 Hz, 10 s |
 # MAGIC | `training_data.py` | The training dataset: generate the splits, its schema, read one split at a Delta version |
 # MAGIC | `training.py` | The PyTorch training loop with per-epoch validation metrics, and the layer table of a model (neither is part of the logged models) |
@@ -173,7 +169,7 @@
 # MAGIC | `eval_plots.py` | The gate's evaluation figures: confusion matrix, ROC curve, precision-recall curve |
 # MAGIC | `ecg_plots.py` | Sample-signal plots (rhythm strips, 12-lead layout) for `01_` and `06_` |
 # MAGIC | `patient_info.py` | Synthetic, non-PII patient + acquisition record, fixed per `pseudo_patient_id`; heart rate measured from the ECG; acquisition times over the clinic day |
-# MAGIC | `scoring.py` | Resolve an alias to a concrete version (that version scores and is recorded); Spark-UDF scoring for the daily batch; driver-side scoring + join for the gate |
+# MAGIC | `scoring.py` | Resolve an alias to a concrete version (that version scores and is recorded); driver-side scoring + join for the gate and the daily batch |
 # MAGIC | `uc_io.py` | Re-run-safe Delta writes; Delta version + time-travel reads |
 # MAGIC
 # MAGIC The model classes (`ArrCNN`, `AfibCNN`, their pyfunc wrappers and input reshape) stay **inside**
@@ -186,15 +182,13 @@
 
 # MAGIC %md
 # MAGIC **Parameters.** Notebooks read [dbutils.widgets](https://docs.databricks.com/aws/en/dev-tools/databricks-utils)
-# MAGIC set by the jobs' parameters: `catalog_name`, `schema_name` (defaults from `common/config.py`) and,
+# MAGIC set by the jobs' parameters: `catalog_name` (required: the bundle's `catalog` variable),
+# MAGIC `schema_name` (the bundle's `schema` variable, default `biosignals`) and,
 # MAGIC for `06_`–`08_`, `run_date` (`YYYY-MM-DD`; empty = today UTC). The DAILY job passes
 # MAGIC `{{job.start_time.iso_date}}` to all three tasks so they agree on one date; run it with
 # MAGIC `run_date=YYYY-MM-DD` to backfill. Re-running a date gives the same rows and never duplicates them.
 # MAGIC
-# MAGIC **Deploy / run (bundle `biosignals-ecg12-afib`, profile `fevm-mmt-aws-usw2`):**
-# MAGIC `databricks bundle deploy -t dev --var app_suffix=<suffix>`, then
-# MAGIC `databricks bundle run ecg12_afib_setup -t dev` and `databricks bundle run ecg12_afib_daily -t dev`
-# MAGIC (same `--var`). `app_suffix` is only the end of the app's name, which is always
-# MAGIC `ecg12-demo-<suffix>`, so it can never be `ekg-demo`; it has no default. See the demo
-# MAGIC `README.md` for the remaining live steps (schema creation, dashboard creation and embedding,
-# MAGIC endpoint permissions for the app, app access).
+# MAGIC **Deploy / run (bundle `biosignals-ecg12-afib`):** jobs + dashboard from the workspace bundle
+# MAGIC editor (target `no_app`, the default), or everything including the app with `deploy.sh` from a
+# MAGIC laptop (target `full`). Run the SETUP job first, then the DAILY job. The project `README.md` has
+# MAGIC the variables, both deploy paths, the permissions and the teardown.

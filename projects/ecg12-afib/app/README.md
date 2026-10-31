@@ -8,6 +8,13 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
   `bio_ecg12_arr` endpoint and, when flagged, to `bio_ecg12_afib` (app service-principal identity,
   `WorkspaceClient()`; names from `common/config.py`, each endpoint named after its model);
   `/api/app-config` gives the UI its deep-link names (endpoint and model pages, the `@champion` label).
+- **Configuration** comes from the app's environment, not the code (`backend/core/_config.py`,
+  prefix `ECG_DEMO_REACT_`): `ECG_DEMO_REACT_CATALOG` (required; the app does not start without
+  it), `ECG_DEMO_REACT_UC_SCHEMA` (default `biosignals`) and `ECG_DEMO_REACT_DASHBOARD_ID`
+  (optional; without it the Batch tab shows a "Dashboard not configured" note). The bundle's `full`
+  target sets all three (`../databricks.yml`, `resources.apps.ecg12_afib_app.config.env`), the
+  dashboard id from the dashboard it deploys. The workspace host and id come from the app's own
+  credentials, which the Databricks Apps runtime provides.
 - **`backend/common/`** is a byte-identical copy of `../common/` (`__init__`, `config`,
   `ecg_signal_gen`, `patient_info`), the source of truth. After changing `../common/`, copy the
   file over (`cp ../common/<module>.py src/ecg_demo_react/backend/common/`); the build stops if
@@ -51,6 +58,10 @@ package index URL differs from the one recorded in the lock; the script sets `UV
 ## Local development
 
 ```bash
+cat > .env <<'ENV'          # read by backend/core/_config.py; git-ignored
+ECG_DEMO_REACT_CATALOG=<catalog>
+DATABRICKS_CONFIG_PROFILE=<profile>
+ENV
 apx dev start   # backend, frontend and OpenAPI watcher
 ```
 

@@ -1,9 +1,10 @@
 # DAILY job: one day's new 12-lead batch through the triage -> classify cascade (the batch path:
-# models are loaded from Unity Catalog at @champion as mlflow spark_udfs and scored on the Spark
-# workers, not via the endpoints). The day's batch is SIMULATED incoming data: 06_ generates
-# synthetic ECGs + patient records in place of a real ingestion step (nothing is ingested).
+# the champion models are loaded from Unity Catalog and score the batch on the driver, not via
+# the endpoints). The day's batch is SIMULATED incoming data: 06_ generates synthetic ECGs +
+# patient records in place of a real ingestion step (nothing is ingested).
 #   06_generate_batch_data -> batch_data_12l_<date>  (simulated)              standard serverless
-#   07_arr_triage          -> arr_triaged_12l_<date>  (bio_ecg12_arr)         standard serverless, ML v5
+#   07_arr_triage          -> arr_triaged_12l_<date> + that date's rows of arr_triage_history_12l
+#                             (bio_ecg12_arr)                                 standard serverless, ML v5
 #   08_afib_classify       -> dailyOrweekly_arr_afib_inference_12l, that date's rows (bio_ecg12_afib)
 #                                                                             standard serverless, ML v5
 # Needs the SETUP job's models (ecg12_afib_setup.job.yml) to exist with a champion alias.
@@ -13,7 +14,7 @@
 resources:
   jobs:
     ecg12_afib_daily:
-      # dev target (mode: development) prefixes "[dev <user>]" and keeps the schedule paused.
+      # Both targets use mode: development, which prefixes "[dev <user>]" and deploys schedules paused.
       name: biosignals_ecg12_afib_daily
 
       # Job parameters are passed to every task's notebook widgets of the same name.
@@ -25,16 +26,14 @@ resources:
         - name: schema_name
           default: ${var.schema}
 
-      # Daily at 06:00 UTC once unpaused (after the gated live setup steps in README.md).
+      # Daily at 06:00 UTC once unpaused: unpause it in the Jobs UI after the SETUP job and one
+      # DAILY run have succeeded.
       schedule:
         quartz_cron_expression: "0 0 6 * * ?"
         timezone_id: UTC
         pause_status: PAUSED
 
-      # Standard serverless ML v5 environment for the two scoring tasks (the training environment's
-      # (AI v5) Python, mlflow-skinny and cloudpickle on the driver). spark_udf runs the PyTorch models
-      # on the Spark workers, which do not get this environment's torch: it gives them the model's own
-      # logged environment, rebuilt with uv with the CPU build of torch (common/scoring.py).
+      # Standard serverless ML v5 environment (torch, mlflow) for the two scoring tasks.
       environments:
         - environment_key: ml_v5
           spec:

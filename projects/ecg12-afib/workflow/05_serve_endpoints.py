@@ -13,12 +13,11 @@
 # MAGIC | `bio_ecg12_afib` (classify) | `bio_ecg12_afib@champion`, pinned to its version | `03_` | `04_` |
 # MAGIC
 # MAGIC Each endpoint has the same name as its model (`common/config.py`). Endpoint names are
-# MAGIC workspace-wide, so these names are this demo's own: the first run creates both endpoints, and a
-# MAGIC re-run after a retrain + promotion moves each one to the new champion version. Inference tables
-# MAGIC are `<endpoint>_payload` in the same schema (`bio_ecg12_arr_payload`, `bio_ecg12_afib_payload`,
-# MAGIC read by the dashboard's live-serving section). Never touched: the first 12-lead run's endpoints
-# MAGIC `arr_model_12l` / `afib_demo_12l` (schema `ekg_afib`) and the live 8-lead `arr_model_mmt` /
-# MAGIC `afib_demo_mmt`.
+# MAGIC workspace-wide: the first run creates both endpoints, and a re-run after a retrain + promotion
+# MAGIC moves each one to the new champion version (an existing endpoint of the same name is updated, so
+# MAGIC one workspace holds one deployment of this project unless the names are changed). Inference
+# MAGIC tables are `<endpoint>_payload` in the same schema (`bio_ecg12_arr_payload`,
+# MAGIC `bio_ecg12_afib_payload`, read by the dashboard's live-serving section).
 
 # COMMAND ----------
 

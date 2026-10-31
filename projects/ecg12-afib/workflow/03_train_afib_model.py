@@ -43,8 +43,7 @@
 # MAGIC constants, never the `common` package. (The training loop in `common/training.py` is not part
 # MAGIC of the logged model.)
 # MAGIC
-# MAGIC Contract: input `(-1, 12, 2500)` float32; output `(-1, 2)` = `[p_not_afib, p_afib]` per row
-# MAGIC (same as the 8-lead model, so callers only change the endpoint name and lead count).
+# MAGIC Contract: input `(-1, 12, 2500)` float32; output `(-1, 2)` = `[p_not_afib, p_afib]` per row.
 # MAGIC
 # MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v5** (torch, CUDA, mlflow; no %pip).
 

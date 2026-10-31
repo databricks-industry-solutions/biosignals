@@ -11,12 +11,12 @@
 #   05_serve_endpoints        -> endpoints bio_ecg12_arr + bio_ecg12_afib at @champion, AI Gateway
 #                                inference tables                                 standard serverless
 # The DAILY job (ecg12_afib_daily.job.yml) scores with the champion models; run this job first.
-# Names come from common/config.py; the first 12-lead run's arr_model_12l / afib_demo_12l and the live
-# 8-lead arr_model_mmt / afib_demo_mmt models and endpoints are not touched.
+# Model and endpoint names come from common/config.py; the catalog and schema from the bundle
+# variables (job parameters catalog_name / schema_name).
 resources:
   jobs:
     ecg12_afib_setup:
-      # dev target (mode: development) prefixes "[dev <user>]".
+      # Both targets use mode: development, which prefixes "[dev <user>]".
       name: biosignals_ecg12_afib_setup
 
       # Job parameters are passed to every task's notebook widgets of the same name.

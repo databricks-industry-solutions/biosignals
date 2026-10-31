@@ -8,31 +8,20 @@
 # MAGIC writes **`arr_triaged_12l_<date>`**: the batch plus `arr_prob`, `arr_flag` (1 = abnormal, goes on
 # MAGIC to the AFib model in `08_`) and `arr_model_info`.
 # MAGIC
-# MAGIC **Distributed batch scoring:** the champion version is wrapped as an `mlflow.pyfunc.spark_udf`
-# MAGIC and applied to the Spark DataFrame, so the Spark workers score the ECGs partition by partition (at
-# MAGIC most `BATCH_UDF_ROWS_PER_PARTITION` ECGs each, `common/config.py`, and at most that many per model
-# MAGIC call where the compute lets `score_spark_udf` cap the Arrow batches) instead of the batch being
-# MAGIC collected to the driver: the same notebook handles the daily ~100 ECGs or a much larger backlog.
-# MAGIC Each ECG's 12 lead columns reach the model as one flattened array, which spark_udf reshapes to the
-# MAGIC model's `(-1, 12, 2500)` signature (`score_spark_udf` in `common/scoring.py`).
+# MAGIC It also writes that date's slice of **`arr_triage_history_12l`**: the same rows without the ECG
+# MAGIC arrays, every day under one fixed table name, which the dashboard reads.
 # MAGIC
-# MAGIC **Scored on the driver** (`scoring.score_driver_side`, as in the gate). Spark-worker scoring
-# MAGIC (`scoring.score_spark_udf`) is an untested follow-up: its one serverless try (`env_manager="uv"` with
-# MAGIC the CPU torch index) failed on a fixable install setting (uv's index strategy took setuptools from the
-# MAGIC torch index), not on torch itself.
+# MAGIC **Scored on the driver** (`scoring.score_driver_side`, as in the gate): the champion version is
+# MAGIC loaded with `mlflow.pyfunc.load_model`, the day's ~100 ECGs are collected to the driver as one
+# MAGIC `(n, 12, 2500)` tensor, and the predictions are joined back by `pseudo_patient_id`.
 # MAGIC
 # MAGIC **Batch path, not the endpoint:** the serving endpoints are not called, so these rows never
 # MAGIC appear in the endpoints' `*_payload` inference tables. `champion` is resolved to a concrete version
 # MAGIC first; that exact version scores and is recorded in `arr_model_info`. Re-running a date overwrites
-# MAGIC the table.
+# MAGIC `arr_triaged_12l_<date>` and replaces that date's rows of `arr_triage_history_12l`.
 # MAGIC
-# MAGIC **Compute:** standard serverless (CPU), base environment **ML v5** (`databricks_ml_v5`; no %pip).
-# MAGIC The Spark workers run the model, so they need torch. The ML environment's torch reaches the driver
-# MAGIC but not the Spark UDF workers (the first live run failed there with "No module named 'torch'"), so
-# MAGIC spark_udf runs with `env_manager="uv"` (`scoring.UDF_ENV_MANAGER`): it rebuilds the model's own
-# MAGIC logged environment (Python 3.12, mlflow 3.8.1, cloudpickle 3.0.0, torch 2.9.0, ...) once on the
-# MAGIC driver and ships it to the workers. `scoring.torch_cpu_wheels()` makes that the CPU build of torch
-# MAGIC (a Spark UDF gets no GPU) instead of PyPI's much larger CUDA build.
+# MAGIC **Compute:** standard serverless (CPU), base environment **ML v5** (`databricks_ml_v5`, which
+# MAGIC ships torch; no %pip). Parameters: `run_date`, `catalog_name` (required), `schema_name`.
 
 # COMMAND ----------
 
@@ -65,7 +54,7 @@ print(f"run_date: {run_date}\nread : {read_table}\nwrite: {write_table}, {histor
 
 # COMMAND ----------
 
-# DBTITLE 1,Resolve champion -> version, wrap exactly that version as a Spark UDF
+# DBTITLE 1,Resolve champion -> version, load exactly that version
 import mlflow
 from mlflow import MlflowClient
 

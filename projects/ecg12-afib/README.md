@@ -8,9 +8,8 @@ abnormal ones, and an atrial fibrillation (AFib) model classifies the flagged on
 runs the whole model cycle on Databricks: generate training data, train, check the models on
 held-out data, promote, serve, score a daily batch, and monitor.
 
-**Contributors:** May Merkle-Tan ([@hengrumay](https://github.com/hengrumay)). To contribute, open
-a pull request (see the root [Contributing](../../README.md#contributing) section) and add
-yourself here.
+**Contributors:** May Merkle-Tan ([@hengrumay](https://github.com/hengrumay)). See
+[Contributing](../../README.md#contributing).
 
 ![Lead II rhythm strips for the three synthetic rhythms](docs/images/lead_ii_rhythm_strips.png)
 

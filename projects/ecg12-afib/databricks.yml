@@ -1,11 +1,18 @@
-# Declarative Automation Bundle (formerly Databricks Asset Bundles): 12-lead ECG/AFib demo, an
-# APX app (React + FastAPI) + SETUP job + DAILY job.
+# Declarative Automation Bundle (formerly Databricks Asset Bundles): 12-lead ECG/AFib demo, the
+# SETUP + DAILY jobs, an AI/BI dashboard and an APX app (React + FastAPI).
+#
+# Two targets, two separate deployments (each has its own folder and state; use one per
+# workspace):
+#   no_app (default)  jobs + dashboard. Needs no local build, so the workspace's bundle editor
+#                     can deploy it (Deploy button).
+#   full              jobs + dashboard + the app. The app's wheel and compiled UI are built
+#                     locally (app/build_from_lockfiles.sh: apx, bun, uv); deploy.sh runs the
+#                     whole install.
 #
 # Nothing here names a workspace: pass your own Databricks CLI profile (-p <profile>) and the
 # required variables on every command, e.g.
 #   databricks bundle validate --strict -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
-# (or export BUNDLE_VAR_catalog=<catalog> BUNDLE_VAR_warehouse_id=<id>). Validate needs app/.build: run
-# app/build_from_lockfiles.sh first; deploy runs that build itself.
+# (or export BUNDLE_VAR_catalog=<catalog> BUNDLE_VAR_warehouse_id=<id>).
 bundle:
   name: biosignals-ecg12-afib
 
@@ -24,47 +31,61 @@ variables:
     description: REQUIRED. ID of the SQL warehouse the AI/BI dashboard runs its queries on.
   app_name:
     description: >-
-      Name of the Databricks App: lowercase letters, digits and hyphens, at most 30 characters.
-      Override it if that name is already taken in your workspace (app names are workspace-wide).
+      Name of the Databricks App (full target): lowercase letters, digits and hyphens, at most 30
+      characters. Override it if that name is already taken in your workspace (app names are
+      workspace-wide).
     default: ecg12-demo
+  viewer_group:
+    description: >-
+      Workspace group that may view the dashboard (CAN_READ) and use the app (CAN_USE).
+    default: users
 
-# apx writes `.gitignore` (`*`) into its build dir, so sync would skip it without this include.
 # dev/ holds developer analysis scripts and the optional local tests (dev/README.md): never
 # deployed with the bundle.
 sync:
-  include:
-    - app/.build
   exclude:
     - dev/**
 
-# Runs in ./app. The script is `apx build` pinned to the committed bun.lock / uv.lock; plain
-# `apx build` (0.3.8) bumps its own build deps to @latest and currently fails (see app/README.md).
-artifacts:
-  ecg12_afib_app:
-    path: ./app
-    build: ./build_from_lockfiles.sh
-
-resources:
-  apps:
-    ecg12_afib_app:
-      name: ${var.app_name}
-      description: "ECG/AFib 12-lead platform-showcase demo (APX React + FastAPI)"
-      # Deployed to <bundle root>/files/app/.build: this bundle's own build folder.
-      source_code_path: ./app/.build
-      config:
-        command: ["uvicorn", "ecg_demo_react.backend.app:app", "--workers", "2"]
-        # Read by the backend's AppConfig (backend/core/_config.py, env prefix ECG_DEMO_REACT_).
-        # The dashboard id is resolved from this deployment's state when the app is deployed
-        # (`bundle run`), so pointing the app at the dashboard needs no rebuild.
-        env:
-          - name: ECG_DEMO_REACT_CATALOG
-            value: ${var.catalog}
-          - name: ECG_DEMO_REACT_UC_SCHEMA
-            value: ${var.schema}
-          - name: ECG_DEMO_REACT_DASHBOARD_ID
-            value: ${resources.dashboards.ecg12_afib_dashboard.id}
-
 targets:
-  dev:
+  no_app:
     mode: development
     default: true
+    # The app's source is not needed without the app.
+    sync:
+      exclude:
+        - app/**
+
+  full:
+    mode: development
+    # apx writes `.gitignore` (`*`) into its build dir, so sync would skip it without this include.
+    sync:
+      include:
+        - app/.build
+    # Runs in ./app. The script is `apx build` pinned to the committed bun.lock / uv.lock; plain
+    # `apx build` (0.3.8) bumps its own build deps to @latest and currently fails (app/README.md).
+    artifacts:
+      ecg12_afib_app:
+        path: ./app
+        build: ./build_from_lockfiles.sh
+    resources:
+      apps:
+        ecg12_afib_app:
+          name: ${var.app_name}
+          description: "ECG/AFib 12-lead platform-showcase demo (APX React + FastAPI)"
+          # Deployed to <bundle root>/files/app/.build: this bundle's own build folder.
+          source_code_path: ./app/.build
+          config:
+            command: ["uvicorn", "ecg_demo_react.backend.app:app", "--workers", "2"]
+            # Read by the backend's AppConfig (backend/core/_config.py, env prefix ECG_DEMO_REACT_).
+            # The dashboard id is resolved from this deployment's state when the app is deployed
+            # (`bundle run ecg12_afib_app`), so pointing the app at the dashboard needs no rebuild.
+            env:
+              - name: ECG_DEMO_REACT_CATALOG
+                value: ${var.catalog}
+              - name: ECG_DEMO_REACT_UC_SCHEMA
+                value: ${var.schema}
+              - name: ECG_DEMO_REACT_DASHBOARD_ID
+                value: ${resources.dashboards.ecg12_afib_dashboard.id}
+          permissions:
+            - group_name: ${var.viewer_group}
+              level: CAN_USE

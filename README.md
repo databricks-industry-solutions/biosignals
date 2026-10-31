@@ -1,8 +1,21 @@
 # Biosignals - Databricks Solution Accelerator
 
-Reference projects for physiological time-series data (ECG and similar biosignals) on Databricks:
-data and models in Unity Catalog, a validated model lifecycle, real-time and batch scoring of the
-same model, an app and a dashboard, all deployable as a bundle.
+A home for biosignal projects on Databricks: physiological time series such as the
+electrocardiogram (ECG), electroencephalogram (EEG), photoplethysmogram (PPG, the pulse signal
+from optical sensors), electromyogram (EMG) and wearable sensor streams. Projects cover the
+steps such work usually needs:
+
+- **Ingest** waveforms from the formats they arrive in, for example DICOM waveform objects,
+  PhysioNet's WFDB, the European Data Format (EDF), HL7 annotated ECG (aECG) and device vendors'
+  XML exports, into governed tables in Unity Catalog.
+- **Signal processing:** filtering, beat and event detection, segmentation and feature
+  extraction at scale.
+- **Modeling and use:** training and validating models, real-time and batch scoring of the same
+  model, apps and dashboards, all deployable as a bundle.
+
+Each project covers part or all of this. The first, `ecg12-afib`, generates synthetic ECGs and
+covers signal processing, modeling and use; ingest from real-world formats is open for new
+projects (see [Contributing](#contributing)).
 
 [![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
 [![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)

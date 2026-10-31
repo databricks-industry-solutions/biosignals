@@ -158,8 +158,8 @@ Any issues discovered through the use of this project should be filed as GitHub 
 
 ### `ecg12-afib`: packages used by the shipped code
 
-Exact versions are pinned in `projects/ecg12-afib/app/pyproject.toml`, `package.json` and the
-lockfiles, and in the notebooks' `%pip install` lines.
+Exact versions are pinned in the lockfiles (`projects/ecg12-afib/app/uv.lock` and `bun.lock`),
+which the deployed app installs from, and in the notebooks' `%pip install` lines.
 
 | Package | License | Copyright |
 |---|---|---|

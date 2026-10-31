@@ -344,3 +344,8 @@ day's ~100 ECGs. No job uses it. On standard serverless the workers need the mod
 environment (`env_manager="uv"`) with PyTorch's CPU wheels; its one try failed on uv's index
 strategy (uv took `setuptools` from the CPU torch index, which lacks the pinned version), which
 looks fixable, but the path is untested on Databricks.
+
+**Other ECG classifiers.** Models that classify other ECG patterns (other rhythms, conduction
+abnormalities or other waveform signatures) belong in their own projects under `projects/`, each
+with its own bundle, README and tests, rather than in this one. This project keeps to the
+two-model triage → AFib cascade.

@@ -138,8 +138,9 @@ SERVING_TIMEOUT_S = 30
 # While the app's Live tab is visible it pings both endpoints on load and then every
 # WARMUP_INTERVAL_S, well inside the 30 min idle window, so they stay awake during a demo.
 WARMUP_INTERVAL_S = 600
-# client_request_id of those warm-up pings. AI Gateway records it in the endpoints' payload
-# tables, so the dashboard's live-serving section can leave the pings out.
+# client_request_id of those pings, recorded in the payload tables; the dashboard's live section
+# leaves these rows out of its request tiles and counts them separately. One home for the tag:
+# the app (backend/router.py) and the dashboard builder both read it here.
 WARMUP_REQUEST_ID = "app-warmup"
 
 

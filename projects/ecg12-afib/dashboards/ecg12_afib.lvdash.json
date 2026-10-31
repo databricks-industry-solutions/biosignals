@@ -98,7 +98,7 @@
       "queryLines": [
         "SELECT 'bio_ecg12_arr (triage)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_arr_payload WHERE client_request_id = 'app-warmup' ",
         "UNION ALL ",
-        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_afib_payload WHERE client_request_id = 'app-warmup'"
+        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_afib_payload WHERE client_request_id = 'app-warmup' "
       ]
     }
   ],
@@ -767,7 +767,7 @@
               "lines": [
                 "### Live serving — the app (endpoint calls logged by AI Gateway)\n",
                 "\n",
-                "Sources: `bio_ecg12_arr_payload` and `bio_ecg12_afib_payload`, the endpoints' inference tables. Each *Triage → Classify* click in the app adds a row to the triage table, and one to the classify table when the ECG is flagged. Batch scoring never appears here. Execution time is the model's inference time only (no network overhead). The app's warm-up pings, which keep the scale-to-zero endpoints awake while its Live tab is open, are left out and only counted. **These tiles show an error until AI Gateway has delivered the first inference-table logs** (best effort, typically within about an hour of the first app request): until then the tables have no columns but `databricks_request_id`."
+                "Sources: `bio_ecg12_arr_payload` and `bio_ecg12_afib_payload`, the endpoints' inference tables. Each *Triage → Classify* click in the app adds a row to the triage table, and one to the classify table when the ECG is flagged. Batch scoring never appears here. Execution time is the model's inference time only (no network overhead). The app's warm-up pings (one single-ECG request per endpoint, keeping the scale-to-zero endpoints awake; `client_request_id = 'app-warmup'`) are left out of every tile below and counted on their own. **These tiles show an error until AI Gateway has delivered the first inference-table logs** (best effort, typically within about an hour of the first app request): until then the tables have no columns but `databricks_request_id`."
               ]
             }
           },
@@ -943,12 +943,12 @@
               "encodings": {
                 "value": {
                   "fieldName": "count(databricks_request_id)",
-                  "displayName": "App warm-up pings (not counted above)"
+                  "displayName": "App warm-up pings (not in the other tiles)"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "App warm-up pings (not counted above)"
+                "title": "App warm-up pings (not in the other tiles)"
               }
             }
           },

@@ -26,9 +26,9 @@ sections, each with its own source tables:
   ``bio_ecg12_afib_payload``. Tiles: requests, model execution time and payloads not logged
   (KPIs), requests and execution time per hour by endpoint, the distribution of the returned
   probabilities, and the latest requests. Only the small response JSON is parsed; the ~650 KB
-  request JSON (the ECG itself) is only measured (its size), never parsed. The app's warm-up
-  pings (``client_request_id`` = config.WARMUP_REQUEST_ID, one row per endpoint per ping) are left
-  out of all of these and only counted, in their own KPI.
+  request JSON (the ECG itself) is only measured (its size), never parsed. The app's warm-up pings
+  (``client_request_id`` = config.WARMUP_REQUEST_ID, sent to keep the scale-to-zero endpoints
+  awake) are left out of all of these tiles and counted in a KPI of their own.
 
 Until data exists the tiles show errors, not empty charts: the batch tiles until the DAILY job
 has run once (the tables do not exist before), the live tiles until AI Gateway has delivered the
@@ -62,10 +62,10 @@ AFIB_PAY = config.payload_table_name(config.AFIB_ENDPOINT)           # bio_ecg12
 DAY = config.BATCH_DATE_COL
 LATEST_DAY = f"{DAY} = (SELECT max({DAY}) FROM {TRI})"               # single-day tiles: the latest batch
 AFIB_POS = f"afib_predictions_1 > {config.AFIB_THRESHOLD}"
-# The app's warm-up pings (backend/router.py /api/warmup) are tagged with this client_request_id.
-# Scored ECGs have none (NULL), hence IS DISTINCT FROM rather than <>, which would drop them too.
+# Rows that are not the app's warm-up pings (backend/router.py /api/warmup). client_request_id is
+# NULL for every other request, hence IS DISTINCT FROM rather than <>, which would drop those too.
 NOT_WARMUP = f"client_request_id IS DISTINCT FROM '{config.WARMUP_REQUEST_ID}'"
-WARMUP = f"client_request_id = '{config.WARMUP_REQUEST_ID}'"
+IS_WARMUP = f"client_request_id = '{config.WARMUP_REQUEST_ID}'"
 RHYTHM = "CASE rhythm_label WHEN 0 THEN 'NSR' WHEN 1 THEN 'AFib' WHEN 2 THEN 'Other' END"
 AGE_BAND = ("CASE WHEN age_years < 50 THEN '40-49' WHEN age_years < 60 THEN '50-59' "
             "WHEN age_years < 70 THEN '60-69' WHEN age_years < 80 THEN '70-79' ELSE '80-90' END")
@@ -89,6 +89,11 @@ def payload_rows(table, label):
             "ROUND(length(request) / 1024.0, 0) AS request_kb, "
             "CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged "
             f"FROM {table} WHERE {NOT_WARMUP} ")
+
+
+def warmup_rows(table, label):
+    """One row per warm-up ping the app sent to the endpoint."""
+    return f"SELECT '{label}' AS endpoint, databricks_request_id, request_time FROM {table} WHERE {IS_WARMUP} "
 
 
 datasets = [
@@ -143,11 +148,9 @@ datasets = [
         f"SELECT '{AFIB_LABEL}' AS endpoint, request_time, p[1] AS score, ROUND(p[1], 1) AS score_bin ",
         f"FROM (SELECT request_time, explode(from_json(response, {AFIB_RESPONSE}).predictions) AS p ",
         f"FROM {AFIB_PAY} WHERE status_code = 200 AND response IS NOT NULL AND {NOT_WARMUP})"]},
-    # The app's warm-up pings only, counted apart (the other live tiles leave them out).
+    # The app's warm-up pings, left out of the two datasets above.
     {"name": "live_warmups", "displayName": "Live: app warm-up pings", "queryLines": [
-        f"SELECT '{ARR_LABEL}' AS endpoint, databricks_request_id, request_time FROM {ARR_PAY} WHERE {WARMUP} ",
-        "UNION ALL ",
-        f"SELECT '{AFIB_LABEL}' AS endpoint, databricks_request_id, request_time FROM {AFIB_PAY} WHERE {WARMUP}"]},
+        warmup_rows(ARR_PAY, ARR_LABEL), "UNION ALL ", warmup_rows(AFIB_PAY, AFIB_LABEL)]},
 ]
 
 
@@ -278,9 +281,10 @@ layout = [
                       f"Sources: `{ARR_PAY}` and `{AFIB_PAY}`, the endpoints' inference tables. Each "
                       "*Triage → Classify* click in the app adds a row to the triage table, and one to the classify "
                       "table when the ECG is flagged. Batch scoring never appears here. Execution time is the "
-                      "model's inference time only (no network overhead). The app's warm-up pings, which keep the "
-                      "scale-to-zero endpoints awake while its Live tab is open, are left out and only counted. "
-                      "**These tiles show an error until AI "
+                      "model's inference time only (no network overhead). The app's warm-up pings (one single-ECG "
+                      "request per endpoint, keeping the scale-to-zero endpoints awake; "
+                      f"`client_request_id = '{config.WARMUP_REQUEST_ID}'`) are left out of every tile below and "
+                      "counted on their own. **These tiles show an error until AI "
                       "Gateway has delivered the first inference-table logs** (best effort, typically within about an "
                       "hour of the first app request): until then the tables have no columns but "
                       "`databricks_request_id`."],
@@ -297,7 +301,7 @@ live_layout = [
             fmt={"type": "number", "decimalPlaces": {"type": "max", "places": 1}}),
     counter("kpi-not-logged", "live_requests", None, "Requests not logged (payload > 1 MiB)", 6, LIVE_Y, w=3,
             agg=("sum(not_logged)", "SUM(`not_logged`)")),
-    counter("kpi-warmups", "live_warmups", None, "App warm-up pings (not counted above)", 9, LIVE_Y, w=3,
+    counter("kpi-warmups", "live_warmups", None, "App warm-up pings (not in the other tiles)", 9, LIVE_Y, w=3,
             agg=("count(databricks_request_id)", "COUNT(`databricks_request_id`)")),
     chart("live-volume", "line", "live_requests",
           {"fieldName": "request_hour", "displayName": "Hour (UTC)", "scale": {"type": "temporal"}},

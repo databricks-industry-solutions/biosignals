@@ -31,10 +31,13 @@ export interface AppConfigOut {
     arr_model: string;
     catalog: string;
     champion_alias: string;
+    daily_job_id: string | null;
     dashboard_id: string | null;
     inference_table: string;
     n_leads: number;
+    serving_timeout_s: number;
     uc_schema: string;
+    warmup_interval_s: number;
     workspace_host: string;
     workspace_id: string;
 }
@@ -44,6 +47,12 @@ export interface ComplexValue {
     ref?: string | null;
     type?: string | null;
     value?: string | null;
+}
+export interface EndpointStatus {
+    endpoint: string;
+    message?: string | null;
+    seconds: number;
+    status: "ready" | "cold" | "error";
 }
 export interface GenerateRequest {
     rhythm?: string;
@@ -80,6 +89,14 @@ export interface PatientRecord {
     sex: string;
     weight_kg: number;
 }
+export interface ServingError {
+    endpoint: string;
+    message: string;
+    reason: "waking" | "rate_limited" | "error";
+}
+export interface ServingErrorOut {
+    detail: ServingError;
+}
 export interface User {
     active?: boolean | null;
     display_name?: string | null;
@@ -107,6 +124,9 @@ export interface ValidationError {
 }
 export interface VersionOut {
     version: string;
+}
+export interface WarmupResponse {
+    endpoints: EndpointStatus[];
 }
 export const analyze = async (data: AnalyzeRequest, options?: RequestInit): Promise<{
     data: AnalyzeResponse;
@@ -366,5 +386,36 @@ export function useVersionSuspense<TData = {
         queryKey: versionKey(),
         queryFn: ()=>version(),
         ...options?.query
+    });
+}
+export const warmup = async (options?: RequestInit): Promise<{
+    data: WarmupResponse;
+}> =>{
+    const res = await fetch("/api/warmup", {
+        ...options,
+        method: "POST"
+    });
+    if (!res.ok) {
+        const body = await res.text();
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(body);
+        } catch  {
+            parsed = body;
+        }
+        throw new ApiError(res.status, res.statusText, parsed);
+    }
+    return {
+        data: await res.json()
+    };
+};
+export function useWarmup(options?: {
+    mutation?: UseMutationOptions<{
+        data: WarmupResponse;
+    }, ApiError, void>;
+}) {
+    return useMutation({
+        mutationFn: ()=>warmup(),
+        ...options?.mutation
     });
 }

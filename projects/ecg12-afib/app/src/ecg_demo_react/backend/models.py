@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from .. import __version__
 from .common.patient_info import PatientRecord
@@ -43,6 +45,31 @@ class AnalyzeResponse(BaseModel):
     afib_model: str | None = None
 
 
+class ServingError(BaseModel):
+    """Why a live endpoint call failed: the ``detail`` of the app's 429 / 502 / 503 replies."""
+    endpoint: str
+    # waking: no answer within SERVING_TIMEOUT_S (or a 504), most likely scaling up from zero;
+    # rate_limited: the endpoint answered 429; error: any other endpoint error.
+    reason: Literal["waking", "rate_limited", "error"]
+    message: str               # shown to the user as is
+
+
+class ServingErrorOut(BaseModel):
+    detail: ServingError
+
+
+class EndpointStatus(BaseModel):
+    """One endpoint's answer to a warm-up ping."""
+    endpoint: str
+    status: Literal["ready", "cold", "error"]   # cold = no answer yet: it is waking from scale-to-zero
+    seconds: float             # how long the ping took
+    message: str | None = None   # why it is cold / in error
+
+
+class WarmupResponse(BaseModel):
+    endpoints: list[EndpointStatus]
+
+
 class AppConfigOut(BaseModel):
     """Names the UI needs for deep links (see router.app_config for where each comes from)."""
     workspace_host: str
@@ -57,3 +84,6 @@ class AppConfigOut(BaseModel):
     dashboard_id: str | None   # None when no dashboard id is configured; the UI then shows no embed
     n_leads: int
     champion_alias: str        # the model alias the endpoints serve (lowercase, as Unity Catalog stores it)
+    daily_job_id: str | None   # the DAILY job the header's Lakeflow link opens; None = the jobs list
+    serving_timeout_s: int     # the backend's bound on one endpoint call (the UI's time limits build on it)
+    warmup_interval_s: int     # keep-alive ping interval while the Live tab is visible

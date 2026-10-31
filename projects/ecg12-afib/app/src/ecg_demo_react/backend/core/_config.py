@@ -29,14 +29,17 @@ class AppConfig(BaseSettings):
         env_nested_delimiter="__",
     )
     app_name: str = Field(default=app_name)
-    # Where this deployment's tables and models live, and which AI/BI dashboard the Batch tab
-    # embeds. The bundle's `full` target sets them (databricks.yml, resources.apps.*.config.env)
-    # from its `catalog` / `schema` variables and the id of the dashboard it deploys, as
-    # ECG_DEMO_REACT_CATALOG, ECG_DEMO_REACT_UC_SCHEMA and ECG_DEMO_REACT_DASHBOARD_ID. The catalog
-    # has no usable default, so the app fails at startup without it; no dashboard id = no embed.
+    # Where this deployment's tables and models live, which AI/BI dashboard the Batch tab embeds
+    # and which DAILY job the header's Lakeflow link opens. The bundle's `full` target sets them
+    # (databricks.yml, resources.apps.*.config.env) from its `catalog` / `schema` variables and the
+    # ids of the dashboard and job it deploys, as ECG_DEMO_REACT_CATALOG, ECG_DEMO_REACT_UC_SCHEMA,
+    # ECG_DEMO_REACT_DASHBOARD_ID and ECG_DEMO_REACT_DAILY_JOB_ID. The catalog has no usable
+    # default, so the app fails at startup without it; no dashboard id = no embed; no job id = the
+    # link opens the workspace's jobs list.
     catalog: str = Field(default="", validate_default=True)
     uc_schema: str = Field(default=SCHEMA)
     dashboard_id: str | None = None
+    daily_job_id: str | None = None
 
     @field_validator("catalog")
     @classmethod

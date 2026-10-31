@@ -77,8 +77,9 @@ targets:
           config:
             command: ["uvicorn", "ecg_demo_react.backend.app:app", "--workers", "2"]
             # Read by the backend's AppConfig (backend/core/_config.py, env prefix ECG_DEMO_REACT_).
-            # The dashboard id is resolved from this deployment's state when the app is deployed
-            # (`bundle run ecg12_afib_app`), so pointing the app at the dashboard needs no rebuild.
+            # The dashboard and DAILY job ids are resolved from this deployment's state when the
+            # app is deployed (`bundle run ecg12_afib_app`), so pointing the app at them needs no
+            # rebuild.
             env:
               - name: ECG_DEMO_REACT_CATALOG
                 value: ${var.catalog}
@@ -86,6 +87,8 @@ targets:
                 value: ${var.schema}
               - name: ECG_DEMO_REACT_DASHBOARD_ID
                 value: ${resources.dashboards.ecg12_afib_dashboard.id}
+              - name: ECG_DEMO_REACT_DAILY_JOB_ID
+                value: ${resources.jobs.ecg12_afib_daily.id}
           permissions:
             - group_name: ${var.viewer_group}
               level: CAN_USE

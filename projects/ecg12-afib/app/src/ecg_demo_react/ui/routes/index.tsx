@@ -1,12 +1,16 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { useMutation } from "@tanstack/react-query";
 import {
+  analyze,
+  warmup,
+  ApiError,
   useGenerate,
-  useAnalyze,
   useAppConfig,
   type GenerateResponse,
   type AnalyzeResponse,
   type AppConfigOut,
+  type EndpointStatus,
   type PatientRecord,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -31,7 +35,11 @@ function buildLinks(c: AppConfigOut) {
     infTable: `${host}/explore/data/${c.catalog}/${c.uc_schema}/${c.inference_table}`,
     schema: `${host}/explore/data/${c.catalog}/${c.uc_schema}`,
     endpoints: `${host}/ml/endpoints`,
-    jobs: `${host}/jobs?o=${c.workspace_id}`,
+    // This deployment's DAILY job (daily_job_id); the workspace's jobs list when it is not set
+    // (the no_app target has no app, and an app deployed outside the bundle has no job id).
+    dailyJob: c.daily_job_id
+      ? `${host}/jobs/${c.daily_job_id}?o=${c.workspace_id}`
+      : `${host}/jobs?o=${c.workspace_id}`,
     apps: `${host}/apps`,
     dashboard: dash ? `${host}/sql/dashboardsv3/${dash}` : undefined,
     dashboardEmbed: dash ? `${host}/embed/dashboardsv3/${dash}?o=${c.workspace_id}` : undefined,
@@ -53,8 +61,8 @@ function Ext({ href, className = LINK_CLS, children }: { href?: string; classNam
 function App() {
   const [tab, setTab] = useState<"live" | "batch">("live");
   const config = useAppConfig();
-  const links = config.data ? buildLinks(config.data.data) : undefined;
-  const alias = config.data?.data.champion_alias;
+  const cfg = config.data?.data;
+  const links = cfg ? buildLinks(cfg) : undefined;
   return (
     <div className="mx-auto min-h-screen w-full max-w-7xl bg-background px-6 pb-6 pt-10 text-slate-800">
       <header className="mb-6">
@@ -69,7 +77,7 @@ function App() {
         <p className="mt-1 text-xs text-muted-foreground">
           Powered by: <Ext href={links?.schema}>Unity Catalog</Ext> ·{" "}
           <Ext href={links?.endpoints}>MLflow Model Serving</Ext> ·{" "}
-          <Ext href={links?.dashboard}>AI/BI</Ext> · <Ext href={links?.jobs}>Lakeflow</Ext> ·{" "}
+          <Ext href={links?.dashboard}>AI/BI</Ext> · <Ext href={links?.dailyJob}>Lakeflow</Ext> ·{" "}
           <Ext href={links?.apps}>Databricks Apps</Ext>
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -95,31 +103,57 @@ function App() {
         ))}
       </div>
 
-      {tab === "live" ? <LiveTab links={links} alias={alias} /> : <BatchTab links={links} />}
+      {tab === "live" ? <LiveTab links={links} cfg={cfg} /> : <BatchTab links={links} />}
     </div>
   );
 }
 
-function LiveTab({ links, alias }: { links?: Links; alias?: string }) {
+function LiveTab({ links, cfg }: { links?: Links; cfg?: AppConfigOut }) {
   // The served model alias from common/config.py ("@champion"); empty until the config loads.
-  const at = alias ? `@${alias}` : "";
+  const at = cfg ? `@${cfg.champion_alias}` : "";
   const [rhythm, setRhythm] = useState("Random");
   const [signal, setSignal] = useState<GenerateResponse | null>(null);
-  const [analysis, setAnalysis] = useState<AnalyzeResponse | null>(null);
   const [zoom, setZoom] = useState(false);
+  const warm = useEndpointWarmup(cfg?.serving_timeout_s, cfg?.warmup_interval_s);
+
+  // /api/analyze makes up to two endpoint calls in sequence, each bounded by the backend at about
+  // serving_timeout_s (backend/router.py), so the UI gives up a little after both: the request
+  // always ends, by answer, error, this time limit or Cancel.
+  const scoreLimitS = cfg ? 2 * (cfg.serving_timeout_s + UI_MARGIN_S) : undefined;
+  const scoreCtl = useRef<AbortController | null>(null);
+  const scoring = useMutation({
+    mutationFn: async (ecg: number[][]) => {
+      if (scoreLimitS === undefined) throw new Error("The app configuration has not loaded yet. Try again.");
+      const ctl = new AbortController();
+      scoreCtl.current = ctl;
+      return (await withTimeLimit(scoreLimitS, ctl, (s) => analyze({ ecg }, { signal: s }))).data;
+    },
+  });
+  // The result of the latest Triage → Classify; cleared when a new call starts or a new reading arrives.
+  const analysis: AnalyzeResponse | undefined = scoring.data;
+  const cancelScoring = () => scoreCtl.current?.abort(new CancelledError());
 
   const gen = useGenerate({
-    mutation: { onSuccess: (r) => { setSignal(r.data); setAnalysis(null); } },
+    mutation: {
+      onSuccess: (r) => {
+        // A new reading replaces the one being scored: stop that call and drop its result
+        // (reset() also detaches the call, so a late answer can never show for the new reading).
+        cancelScoring();
+        scoring.reset();
+        setSignal(r.data);
+      },
+    },
   });
-  const analyze = useAnalyze({ mutation: { onSuccess: (r) => setAnalysis(r.data) } });
 
-  const generate = (rh: string) => gen.mutate({ rhythm: rh });
+  const newReading = (rh: string) => gen.mutate({ rhythm: rh });
   // All leads go to both models (the (1, 12, 2500) input contract).
-  const runAnalyze = () => signal && analyze.mutate({ ecg: signal.ecg });
+  const runAnalyze = () => {
+    if (signal) scoring.mutate(signal.ecg);
+  };
 
-  // Auto-populate a random signal on landing so the demo is never empty.
+  // Read in a random ECG on landing so the demo is never empty.
   useEffect(() => {
-    generate("Random");
+    newReading("Random");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -134,15 +168,15 @@ function LiveTab({ links, alias }: { links?: Links; alias?: string }) {
           <select
             className="w-full rounded-md border bg-card px-3 py-2 text-sm"
             value={rhythm}
-            onChange={(e) => { setRhythm(e.target.value); generate(e.target.value); }}
+            onChange={(e) => { setRhythm(e.target.value); newReading(e.target.value); }}
           >
             {RHYTHMS.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
-          <Button variant="outline" className="mt-2 w-full" onClick={() => generate(rhythm)} disabled={gen.isPending}>
-            New sample
+          <Button variant="outline" className="mt-2 w-full" onClick={() => newReading(rhythm)} disabled={gen.isPending}>
+            New reading
           </Button>
           <p className="mt-3 text-xs text-muted-foreground">
-            Live samples are generated here and not stored; each model call is logged to its AI
+            Each ECG is read in and scored live, and not stored; each model call is logged to its AI
             Gateway inference table in Unity Catalog. Batch ECGs land in Unity Catalog (Delta).
           </p>
           <Ext href={links?.infTable} className="text-xs font-medium text-slate-700 underline underline-offset-2">
@@ -164,11 +198,14 @@ function LiveTab({ links, alias }: { links?: Links; alias?: string }) {
             </button>
           )}
         </div>
-        {gen.isPending && <p className="text-sm text-muted-foreground">Generating…</p>}
+        {gen.isPending && <p className="text-sm text-muted-foreground">Reading…</p>}
+        {gen.isError && (
+          <p className="text-sm text-red-700">Could not read in an ECG ({errorMessage(gen.error)}). Try New reading.</p>
+        )}
         {signal ? (
           <EcgChart leads={signal.ecg} leadNames={signal.lead_names} />
         ) : (
-          !gen.isPending && <p className="text-sm text-muted-foreground">Select a rhythm to generate a signal.</p>
+          !gen.isPending && <p className="text-sm text-muted-foreground">Select a rhythm to read in an ECG.</p>
         )}
         <LeadLegend />
       </section>
@@ -180,14 +217,31 @@ function LiveTab({ links, alias }: { links?: Links; alias?: string }) {
           variant="secondary"
           className="w-full bg-slate-700 font-semibold text-white hover:bg-slate-800"
           onClick={runAnalyze}
-          disabled={!signal || analyze.isPending}
+          disabled={!signal || !cfg || scoring.isPending}
         >
           Triage → Classify
         </Button>
         <p className="mt-1 text-[11px] text-muted-foreground">Model Serving · MLflow {at} · all 12 leads</p>
+        {cfg && <EndpointChips names={[cfg.arr_endpoint, cfg.afib_endpoint]} warm={warm} />}
 
-        {analyze.isPending && (
-          <p className="mt-3 text-sm text-muted-foreground">Querying live endpoints (cold start ~1 min)…</p>
+        {scoring.isPending && (
+          <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+            <p>
+              Querying the live endpoints… One that has scaled to zero needs time to wake (89 s and
+              130 s when this demo was tested); this request ends within {scoreLimitS} s, with a
+              message to try again if an endpoint is still waking.
+            </p>
+            <Button variant="outline" size="sm" className="w-full" onClick={cancelScoring}>Cancel</Button>
+          </div>
+        )}
+        {scoring.error instanceof CancelledError && (
+          <p className="mt-3 text-xs text-muted-foreground">Cancelled.</p>
+        )}
+        {scoring.isError && !(scoring.error instanceof CancelledError) && (
+          <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            {errorMessage(scoring.error)}
+            <Button variant="outline" size="sm" className="mt-2 w-full" onClick={runAnalyze}>Retry</Button>
+          </div>
         )}
         {analysis && (
           <div className="mt-3 space-y-3">
@@ -238,6 +292,152 @@ function LiveTab({ links, alias }: { links?: Links; alias?: string }) {
       </div>
     )}
     </>
+  );
+}
+
+/** Seconds the UI waits beyond the backend's own bound on an endpoint call before it gives up itself. */
+const UI_MARGIN_S = 10;
+/** After this many "cold" warm-up pings in a row, wait the keep-alive interval before the next one. */
+const MAX_COLD_PINGS = 8;
+
+class TimeLimitError extends Error {
+  constructor(seconds: number) {
+    super(`No answer within ${seconds} s, so the app stopped waiting. Try again.`);
+    this.name = "TimeLimitError";
+  }
+}
+class CancelledError extends Error {
+  constructor() {
+    super("Cancelled.");
+    this.name = "CancelledError";
+  }
+}
+/** Abort reason when the page is hidden or the Live tab closes: ends a ping without an error. */
+class StoppedError extends Error {
+  constructor() {
+    super("Stopped.");
+    this.name = "StoppedError";
+  }
+}
+
+/** Runs `call` with `ctl`'s signal, aborted after `limitS` seconds (TimeLimitError) unless it ends first. */
+async function withTimeLimit<T>(limitS: number, ctl: AbortController, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const timer = window.setTimeout(() => ctl.abort(new TimeLimitError(limitS)), limitS * 1000);
+  try {
+    return await call(ctl.signal);
+  } catch (err) {
+    throw ctl.signal.aborted ? ctl.signal.reason : err;   // the abort reason, whatever fetch rejected with
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** What to show for a failed call: the backend's ServingError message when the reply has one. */
+function errorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    const body = err.body;
+    if (typeof body === "object" && body !== null && "detail" in body) {
+      const detail = body.detail;
+      if (typeof detail === "object" && detail !== null && "message" in detail && typeof detail.message === "string") {
+        return detail.message;
+      }
+    }
+    return `The app answered HTTP ${err.status}. Try again.`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+type Warmup = { statuses: Record<string, EndpointStatus>; pinging: boolean; error?: string };
+
+/**
+ * Wakes both endpoints when the Live tab opens and keeps them awake while it is visible: pings
+ * /api/warmup at once, again right after a ping that found an endpoint still cold (each ping waits
+ * up to serving_timeout_s), then every warmup_interval_s. It stops while the page is hidden
+ * (document.visibilityState) and when the tab unmounts, and re-checks from scratch on return.
+ * Each ping logs one row per endpoint in that endpoint's payload table (backend/router.py), which
+ * the dashboard's live-serving section leaves out.
+ */
+function useEndpointWarmup(timeoutS?: number, intervalS?: number): Warmup {
+  const [warm, setWarm] = useState<Warmup>({ statuses: {}, pinging: false });
+  useEffect(() => {
+    if (timeoutS === undefined || intervalS === undefined) return;
+    const limitS = timeoutS + UI_MARGIN_S;   // both endpoints are pinged in parallel: one call's bound
+    const everyS = intervalS;
+    let timer: number | undefined;
+    let ctl: AbortController | undefined;
+    let coldPings = 0;
+
+    async function ping() {
+      const mine = new AbortController();
+      ctl = mine;
+      setWarm((w) => ({ ...w, pinging: true }));
+      let next: Warmup;
+      let cold = false;
+      try {
+        const { data } = await withTimeLimit(limitS, mine, (s) => warmup({ signal: s }));
+        next = { statuses: Object.fromEntries(data.endpoints.map((e) => [e.endpoint, e])), pinging: false };
+        cold = data.endpoints.some((e) => e.status === "cold");
+      } catch (err) {
+        next = { statuses: {}, pinging: false, error: errorMessage(err) };
+      }
+      if (mine.signal.reason instanceof StoppedError) return;   // hidden or closed meanwhile: no new ping
+      setWarm(next);
+      coldPings = cold ? coldPings + 1 : 0;
+      timer = window.setTimeout(ping, (cold && coldPings < MAX_COLD_PINGS ? 0 : everyS) * 1000);
+    }
+    const stop = () => {
+      window.clearTimeout(timer);
+      ctl?.abort(new StoppedError());
+      setWarm((w) => ({ ...w, pinging: false }));
+    };
+    const onVisibility = () => {
+      stop();
+      if (document.visibilityState === "visible") {
+        coldPings = 0;
+        setWarm({ statuses: {}, pinging: false });
+        void ping();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    if (document.visibilityState === "visible") void ping();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
+    };
+  }, [timeoutS, intervalS]);
+  return warm;
+}
+
+type ChipState = "cold" | "waking" | "ready" | "error";
+const CHIP: Record<ChipState, { dot: string; label: string }> = {
+  cold: { dot: "bg-slate-400", label: "cold" },
+  waking: { dot: "animate-pulse bg-amber-500", label: "waking…" },
+  ready: { dot: "bg-emerald-600", label: "ready" },
+  error: { dot: "bg-red-600", label: "error" },
+};
+
+/** One small status chip per endpoint, from the warm-up pings; hover for the detail. */
+function EndpointChips({ names, warm }: { names: string[]; warm: Warmup }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1" title="Endpoints scale to zero when idle; this tab wakes them and keeps them awake while it is open.">
+      {names.map((name) => {
+        const s = warm.statuses[name];
+        const state: ChipState =
+          s?.status === "ready" ? "ready"
+          : s?.status === "error" || (!s && warm.error) ? "error"
+          : warm.pinging ? "waking"
+          : "cold";
+        const detail =
+          s?.status === "ready" ? `answered in ${s.seconds} s` : (s?.message ?? warm.error ?? "not checked yet");
+        return (
+          <span key={name} title={`${name}: ${detail}`}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-0.5 text-[11px] text-slate-600">
+            <span className={`h-1.5 w-1.5 rounded-full ${CHIP[state].dot}`} />
+            {name} · {CHIP[state].label}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 

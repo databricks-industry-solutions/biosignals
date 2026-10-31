@@ -127,6 +127,21 @@ ID_COL = "pseudo_patient_id"
 # crosses midnight still reads and writes a single date.
 RUN_DATE_PARAM = "run_date"
 
+# --- App: live endpoint calls ---------------------------------------------------------------
+# Both endpoints scale to zero when idle (after 30 min without requests). Waking one took 89 s and
+# 130 s, request to answer, when this demo was tested, so every live call from the app is bounded:
+# SERVING_TIMEOUT_S is both the databricks-sdk http_timeout_seconds (one HTTP attempt) and
+# retry_timeout_seconds (no new retry after this long) of the app's endpoint client. A call to a
+# cold endpoint therefore gives up after about this long and the app answers 503 "waking up, try
+# again" instead of waiting.
+SERVING_TIMEOUT_S = 30
+# While the app's Live tab is visible it pings both endpoints on load and then every
+# WARMUP_INTERVAL_S, well inside the 30 min idle window, so they stay awake during a demo.
+WARMUP_INTERVAL_S = 600
+# client_request_id of those warm-up pings. AI Gateway records it in the endpoints' payload
+# tables, so the dashboard's live-serving section can leave the pings out.
+WARMUP_REQUEST_ID = "app-warmup"
+
 
 def uc_location(catalog: str | None, schema: str | None) -> tuple[str, str]:
     """The ``catalog_name`` / ``schema_name`` parameters, checked: the catalog is required (no

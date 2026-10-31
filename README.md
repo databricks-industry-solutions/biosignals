@@ -14,7 +14,7 @@ steps such work usually needs:
   model, apps and dashboards, all deployable as a bundle.
 
 Each project covers part or all of this. The first, `ecg12-afib`, generates synthetic ECGs and
-covers signal processing, modeling and use; ingest from real-world formats is open for new
+covers modeling and use; ingest from real-world formats and signal processing are open for new
 projects (see [Contributing](#contributing)).
 
 [![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)

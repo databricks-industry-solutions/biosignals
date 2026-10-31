@@ -34,11 +34,15 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install nbconvert jupyter-book sphinx markdown beautifulsoup4
+          # HTML sanitizer for every rendered fragment (.github/scripts/sanitize_html.py); MIT license
+          pip install nh3==0.3.7
 
       # Renders the root README.md, each projects/<project>/README.md, each project's docs/*.md and
       # every project notebook (Databricks .py source notebooks and .ipynb under projects/) into one
       # page. Links between those markdown files switch sections in place; other relative links
-      # point at the file on GitHub. There is no root notebooks/ folder: each project keeps its
+      # point at the file on GitHub. Every rendered fragment is sanitized against an allowlist
+      # (.github/scripts/sanitize_html.py, nh3): no script, event handlers, style or non-http(s) /
+      # mailto URLs reach the page. There is no root notebooks/ folder: each project keeps its
       # notebooks in its own folder.
       - name: Convert notebooks and create single-page app
         run: |
@@ -63,7 +67,12 @@ jobs:
           import markdown
           import re
           import glob
+          import sys
+          from html import escape as esc   # `html` is the page being built below
           from bs4 import BeautifulSoup
+
+          sys.path.insert(0, '.github/scripts')
+          from sanitize_html import clean  # allowlist sanitizer: every rendered fragment goes through it
           
           import posixpath
 
@@ -80,9 +89,11 @@ jobs:
               md_sections[path] = f"{path.split('/')[1]}__docs__{os.path.splitext(os.path.basename(path))[0]}"
 
           def render_markdown(path):
-              """(title, HTML) of one markdown file. Heading ids get the section id as prefix (unique on the
-              page); links to another rendered file become in-page links (data-section / data-anchor, see
-              showSection); every other relative link points at the file on GitHub, so nothing breaks."""
+              """(title, sanitized HTML) of one markdown file. Heading ids get the section id as prefix
+              (unique on the page); links to another rendered file become in-page links (data-section /
+              data-anchor, see showSection); every other relative link points at the file on GitHub, so
+              nothing breaks. Then clean() removes everything outside the allowlist (script, event
+              handlers, style, javascript: and other non-http(s)/mailto URLs, ...)."""
               section = md_sections[path]
               with open(path, 'r') as f:
                   soup = BeautifulSoup(markdown.markdown(f.read(), extensions=md_extensions), 'html.parser')
@@ -102,8 +113,9 @@ jobs:
                           a['data-anchor'] = f"{md_sections[resolved]}--{anchor}"
                   else:
                       a['href'] = f"{repo_url}/blob/{ref}/{resolved}" + (f"#{anchor}" if anchor else "")
-              title = soup.find('h1')
-              return (title.get_text(strip=True) if title else os.path.basename(path)), str(soup)
+              heading = soup.find('h1')
+              title = ' '.join(heading.get_text().split()) if heading else os.path.basename(path)   # text only
+              return title, clean(str(soup))
 
           rendered = {path: render_markdown(path) for path in md_sections}
           readme_content = rendered['README.md'][1] if 'README.md' in rendered else ""
@@ -125,7 +137,7 @@ jobs:
           if os.path.exists('notebook_fragments.json'):
               with open('notebook_fragments.json', 'r') as f:
                   py_notebooks = json.load(f)
-                  notebooks.update(py_notebooks)
+                  notebooks.update({name: clean(fragment) for name, fragment in py_notebooks.items()})
           
           # Read .ipynb notebook content (extract body from temp files)
           for temp_file in glob.glob('temp_*.html'):
@@ -139,16 +151,13 @@ jobs:
                   if body:
                       # Find the notebook container
                       container = body.find('div', class_='container')
-                      if container:
-                          notebooks[name] = str(container)
-                      else:
-                          notebooks[name] = str(body)
+                      notebooks[name] = clean(str(container if container else body))
           
           # Create single-page application
           html = f'''<!DOCTYPE html>
           <html>
           <head>
-              <title>{title}</title>
+              <title>{esc(title)}</title>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
               <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -364,7 +373,7 @@ jobs:
               <div class="header">
                   <img src="https://databricks-prod-cloudfront.cloud.databricks.com/static/811f68f9f55e3a5330b6e6ae1e54c07fc5ec7224f15be529de3400226e2eca3a/db-nav-logo.svg" 
                        class="logo" alt="Databricks">
-                  <div class="title">{title}</div>
+                  <div class="title">{esc(title)}</div>
                   <a href="{os.environ.get('GITHUB_SERVER_URL', '')}/{os.environ.get('GITHUB_REPOSITORY', '')}" 
                      class="github-link">View on GitHub</a>
               </div>
@@ -372,15 +381,17 @@ jobs:
               <div class="main-container">
                   <div class="sidebar">
                       <h3>📚 Documentation</h3>
-                      <div class="nav-link active" data-section="readme" onclick="showSection('readme')">Overview</div>'''
+                      <div class="nav-link active" data-section="readme">Overview</div>'''
 
           # Add project navigation
           if project_readmes:
               html += '\n            <h3 style="margin-top: 30px;">📁 Projects</h3>'
+              # Names come from file names and headings: escaped, and no inline handlers (one click
+              # listener reads data-section).
               for project in project_readmes:
-                  html += f'\n            <div class="nav-link" data-section="{project}__readme" onclick="showSection(\'{project}__readme\')">📁 {project}</div>'
-                  for section_id, title, _ in project_docs.get(project, []):
-                      html += f'\n            <div class="nav-link" data-section="{section_id}" onclick="showSection(\'{section_id}\')" style="padding-left: 28px;">{title}</div>'
+                  html += f'\n            <div class="nav-link" data-section="{esc(project)}__readme">📁 {esc(project)}</div>'
+                  for section_id, doc_title, _ in project_docs.get(project, []):
+                      html += f'\n            <div class="nav-link" data-section="{esc(section_id)}" style="padding-left: 28px;">{esc(doc_title)}</div>'
 
           # Add notebook navigation
           if notebooks:
@@ -388,7 +399,7 @@ jobs:
               for name in sorted(notebooks.keys()):
                   project, _, notebook = name.partition('__')
                   display_name = f"{project}: {notebook.replace('_', ' ')}" if notebook else name.replace('_', ' ').title()
-                  html += f'\n            <div class="nav-link" data-section="{name}" onclick="showSection(\'{name}\')">📓 {display_name}</div>'
+                  html += f'\n            <div class="nav-link" data-section="{esc(name)}">📓 {esc(display_name)}</div>'
           
           html += f'''
                   </div>
@@ -402,22 +413,22 @@ jobs:
           # Add project README and docs sections
           for project, content in project_readmes.items():
               html += f'''
-                      <!-- {project} README Section -->
-                      <div id="{project}__readme" class="content-section">
+                      <!-- {esc(project)} README Section -->
+                      <div id="{esc(project)}__readme" class="content-section">
                           {content}
                       </div>'''
               for section_id, _, doc in project_docs.get(project, []):
                   html += f'''
-                      <!-- {section_id} Section -->
-                      <div id="{section_id}" class="content-section">
+                      <!-- {esc(section_id)} Section -->
+                      <div id="{esc(section_id)}" class="content-section">
                           {doc}
                       </div>'''
 
           # Add notebook sections
           for name, content in notebooks.items():
               html += f'''
-                      <!-- {name} Section -->
-                      <div id="{name}" class="content-section">
+                      <!-- {esc(name)} Section -->
+                      <div id="{esc(name)}" class="content-section">
                           {content}
                       </div>'''
           
@@ -471,9 +482,10 @@ jobs:
                       }}, 10);
                   }}
                   
-                  // Links between rendered markdown files (README <-> docs) switch sections in place
+                  // Sidebar entries and links between rendered markdown files (README <-> docs) switch
+                  // sections in place
                   document.addEventListener('click', function(e) {{
-                      const link = e.target.closest('a[data-section]');
+                      const link = e.target.closest('a[data-section], .nav-link[data-section]');
                       if (!link) return;
                       e.preventDefault();
                       showSection(link.dataset.section, link.dataset.anchor);

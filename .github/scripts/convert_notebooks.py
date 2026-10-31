@@ -6,6 +6,8 @@ import markdown
 import glob
 import html
 
+from sanitize_html import clean   # same folder: the allowlist every rendered fragment goes through
+
 
 def parse_databricks_notebook(filepath):
     """Parse a Databricks .py notebook format into cells"""
@@ -65,10 +67,11 @@ def convert_to_html_fragment(filepath):
     for i, cell in enumerate(cells):
         if cell['type'] == 'markdown':
             # Convert markdown to HTML using nbconvert structure
-            md_html = markdown.markdown(
-                cell['content'], 
+            # Sanitized: raw HTML in a Markdown cell cannot add script to the page
+            md_html = clean(markdown.markdown(
+                cell['content'],
                 extensions=['fenced_code', 'tables', 'nl2br', 'toc']
-            )
+            ))
             html_content.append(f'''<div class="cell border-box-sizing text_cell rendered">
 <div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">

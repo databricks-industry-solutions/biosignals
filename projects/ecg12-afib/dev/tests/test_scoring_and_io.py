@@ -44,6 +44,8 @@ def test_names_and_run_date():
     assert config.payload_table(config.ARR_ENDPOINT, "c", "s") == "c.s.bio_ecg12_arr_payload"
     assert config.payload_table(config.AFIB_ENDPOINT, "c", "s") == "c.s.bio_ecg12_afib_payload"
     assert config.ecg_columns() == [f"ecg{i}" for i in range(1, 13)]
+    # The app's live calls: the bound on one endpoint call, the keep-alive interval, the ping tag.
+    assert (config.SERVING_TIMEOUT_S, config.WARMUP_INTERVAL_S, config.WARMUP_REQUEST_ID) == (30, 600, "app-warmup")
 
 
 def test_model_lifecycle_and_training_settings():

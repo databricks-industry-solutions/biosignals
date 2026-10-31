@@ -138,7 +138,21 @@ synthetic data, not skill on a hard problem, and every figure says so in its cap
   to `bio_ecg12_afib`; AI Gateway logs every request/response to `bio_ecg12_arr_payload` /
   `bio_ecg12_afib_payload`. One 12-lead ECG is ~650 KB of JSON, inside the inference table's 1 MiB
   logging limit; a request above 1 MiB is served but logged with `MAX_REQUEST_SIZE_EXCEEDED` and a
-  null payload, so `05_`'s smoke test also sends one ECG per request.
+  null payload, so `05_`'s smoke test and the app's warm-up pings also send one ECG per request.
+
+**Scale-to-zero and the app.** Both endpoints scale to zero when idle, and waking one took 89 s and
+130 s when this demo was tested. So every endpoint call from the app is bounded by
+`SERVING_TIMEOUT_S` (30 s, `common/config.py`; the databricks-sdk `http_timeout_seconds` and
+`retry_timeout_seconds` of the app's serving client): a call that hits it returns HTTP 503 with a
+"waking up from scale-to-zero, try again" message instead of hanging; a rate-limited call returns
+429 and any other endpoint error 502, each with the endpoint and a message the UI shows. The UI gives
+*Triage → Classify* its own limit of 80 s (two bounded calls plus a margin), a Cancel button and
+Retry. While the Live tab is visible it calls `POST /api/warmup` on load, again right away while an
+endpoint is still cold, then every `WARMUP_INTERVAL_S` (600 s, inside the endpoints' idle window),
+stops while the page is hidden, and shows a ready / waking / cold / error chip per endpoint. Each
+warm-up ping is one single-ECG request per endpoint with `client_request_id = app-warmup`
+(`WARMUP_REQUEST_ID`), so it is one row in that endpoint's payload table, which the dashboard leaves
+out of its live tiles and counts separately. The pings use only the app's `CAN_QUERY` grant.
 
 ## Dashboard
 
@@ -157,6 +171,8 @@ make each viewer's own Unity Catalog grants apply instead.
 - **Live serving** reads the two payload tables: requests, model execution time and payloads not
   logged per endpoint, the returned probabilities, the latest requests. It parses only the small
   response JSON; `execution_duration_ms` is the model's inference time, not end-to-end latency.
+  The app's warm-up pings (`client_request_id = 'app-warmup'`) are left out of all of these and
+  counted on their own ("App warm-up pings").
 
 **Until there is data, tiles show errors, not empty charts.** The batch tiles fail until the DAILY
 job has run once (their tables do not exist before). The live tiles fail with `UNRESOLVED_COLUMN`
@@ -176,7 +192,9 @@ UI version back into the file.
 The app reads the dashboard id from `ECG_DEMO_REACT_DASHBOARD_ID`, which the `full` target sets to
 the deployed dashboard's id (`${resources.dashboards.ecg12_afib_dashboard.id}`, resolved when the
 app is deployed), so pointing the app at the dashboard needs no rebuild. Without an id the app's
-Batch tab shows a "Dashboard not configured" note. Embedding also needs the app's domain on the
+Batch tab shows a "Dashboard not configured" note. The header's "Lakeflow" link works the same way:
+`ECG_DEMO_REACT_DAILY_JOB_ID` = `${resources.jobs.ecg12_afib_daily.id}` opens the DAILY job, and
+without it the link opens the workspace's jobs list. Embedding also needs the app's domain on the
 workspace's dashboard-embedding allowlist (a workspace admin setting; `deploy.sh` adds it).
 
 ## The 12-lead signal and patient record
@@ -280,7 +298,7 @@ cd projects/ecg12-afib
 6. grants the app's service principal `CAN_QUERY` on both endpoints (they exist only after the
    SETUP job, so they cannot be app resources of the first deploy);
 7. starts the app (`databricks bundle run ecg12_afib_app`), which deploys the built source with
-   its environment, including the dashboard id;
+   its environment, including the dashboard and DAILY job ids;
 8. adds the app's domain to the dashboard-embedding allowlist (needs a workspace admin; fails with
    the domain to add, or `--skip-embed-allowlist` skips it and prints that domain).
 
@@ -296,7 +314,9 @@ These are billable resources in your workspace: serverless job runs (SETUP train
 serverless GPU, A10; DAILY runs on standard serverless), two Model Serving endpoints (workload size
 Small with scale-to-zero, so they cost only while they serve, and the first request after idling
 waits for them to start), the SQL warehouse while the dashboard runs queries, and the app while it
-is running (`databricks apps stop <app_name> -p <profile>` stops it). The DAILY schedule is paused.
+is running (`databricks apps stop <app_name> -p <profile>` stops it). While someone has the app's
+Live tab open, its warm-up pings keep both endpoints awake (one request each every 10 minutes);
+they scale to zero again once no page is open. The DAILY schedule is paused.
 
 ## Teardown
 

@@ -7,13 +7,26 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
   its lead names and a synthetic patient record; `/api/analyze` sends all 12 leads to the
   `bio_ecg12_arr` endpoint and, when flagged, to `bio_ecg12_afib` (app service-principal identity,
   `WorkspaceClient()`; names from `common/config.py`, each endpoint named after its model);
-  `/api/app-config` gives the UI its deep-link names (endpoint and model pages, the `@champion` label).
+  `/api/warmup` sends one single-ECG request to each endpoint (tagged `client_request_id =
+  app-warmup`) and returns each one's status (`ready` / `cold` / `error`); `/api/app-config` gives
+  the UI its deep-link names (endpoint and model pages, the DAILY job, the `@champion` label) and its
+  time limits.
+- **Scale-to-zero.** Both endpoints scale to zero when idle, and a cold one can take a minute or
+  more to answer. Every endpoint call is bounded by `SERVING_TIMEOUT_S` (`common/config.py`, set as
+  the databricks-sdk `http_timeout_seconds` and `retry_timeout_seconds` of a dedicated serving
+  client); a call that hits it gets a 503 with a "waking up, try again" message instead of hanging
+  (429 / 502 for rate limits and other endpoint errors). The Live tab calls `/api/warmup` on load
+  and every `WARMUP_INTERVAL_S` while the page is visible (stopping while it is hidden), shows a
+  status chip per endpoint, and gives Triage → Classify its own time limit, a Cancel button and
+  Retry.
 - **Configuration** comes from the app's environment, not the code (`backend/core/_config.py`,
   prefix `ECG_DEMO_REACT_`): `ECG_DEMO_REACT_CATALOG` (required; the app does not start without
   it), `ECG_DEMO_REACT_UC_SCHEMA` (default `biosignals`) and `ECG_DEMO_REACT_DASHBOARD_ID`
-  (optional; without it the Batch tab shows a "Dashboard not configured" note). The bundle's `full`
-  target sets all three (`../databricks.yml`, `resources.apps.ecg12_afib_app.config.env`), the
-  dashboard id from the dashboard it deploys. The workspace host and id come from the app's own
+  (optional; without it the Batch tab shows a "Dashboard not configured" note) and
+  `ECG_DEMO_REACT_DAILY_JOB_ID` (optional; the header's Lakeflow link opens that job, else the
+  jobs list). The bundle's `full` target sets all four (`../databricks.yml`,
+  `resources.apps.ecg12_afib_app.config.env`), the two ids from the dashboard and DAILY job it
+  deploys. The workspace host and id come from the app's own
   credentials, which the Databricks Apps runtime provides.
 - **`backend/common/`** is a byte-identical copy of `../common/` (`__init__`, `config`,
   `ecg_signal_gen`, `patient_info`), the source of truth. After changing `../common/`, copy the

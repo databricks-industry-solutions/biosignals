@@ -107,11 +107,13 @@ def test_no_app_target_needs_no_local_build_and_full_adds_the_app():
     assert app["config"]["command"] == yaml.safe_load((DEMO_ROOT / "app" / "app.yml").read_text())["command"]
     env = {e["name"]: e["value"] for e in app["config"]["env"]}
     assert env == {"ECG_DEMO_REACT_CATALOG": "${var.catalog}", "ECG_DEMO_REACT_UC_SCHEMA": "${var.schema}",
-                   "ECG_DEMO_REACT_DASHBOARD_ID": "${resources.dashboards.ecg12_afib_dashboard.id}"}
+                   "ECG_DEMO_REACT_DASHBOARD_ID": "${resources.dashboards.ecg12_afib_dashboard.id}",
+                   "ECG_DEMO_REACT_DAILY_JOB_ID": "${resources.jobs.ecg12_afib_daily.id}"}
+    assert "ecg12_afib_daily" in _jobs()                                     # the job that id refers to
     assert app["permissions"] == [{"group_name": "${var.viewer_group}", "level": "CAN_USE"}]
     # Those env names are the backend's AppConfig fields (env prefix ECG_DEMO_REACT_).
     app_config = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend" / "core" / "_config.py").read_text()
-    for field in ("catalog: str", "uc_schema: str", "dashboard_id: str | None"):
+    for field in ("catalog: str", "uc_schema: str", "dashboard_id: str | None", "daily_job_id: str | None"):
         assert f"    {field}" in app_config, field
     pyproject = (DEMO_ROOT / "app" / "pyproject.toml").read_text()
     assert 'app-slug = "ecg_demo_react"' in pyproject                        # -> prefix ECG_DEMO_REACT_
@@ -126,6 +128,35 @@ def test_dashboard_is_a_bundle_resource_on_the_bundle_variables():
         "${var.warehouse_id}", "${var.catalog}", "${var.schema}")
     assert dash["embed_credentials"] is True and "parent_path" not in dash
     assert dash["permissions"] == [{"group_name": "${var.viewer_group}", "level": "CAN_READ"}]
+
+
+def test_app_bounds_every_endpoint_call_and_tags_its_warmup_pings():
+    """Read, not run (the test environment has no FastAPI): one serving client bounded by
+    SERVING_TIMEOUT_S for every live call, /api/warmup tagged with WARMUP_REQUEST_ID, and the UI's
+    limit on Triage -> Classify built on the backend's bound (2 x (30 + 10) = 80 s)."""
+    assert (config.SERVING_TIMEOUT_S, config.WARMUP_INTERVAL_S, config.WARMUP_REQUEST_ID) == (30, 600, "app-warmup")
+    assert config.WARMUP_INTERVAL_S < 30 * 60                     # inside the endpoints' 30 min idle window
+    backend = DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend"
+    router = (backend / "router.py").read_text()
+    assert ("http_timeout_seconds=config.SERVING_TIMEOUT_S,\n"
+            "            retry_timeout_seconds=config.SERVING_TIMEOUT_S," in router)
+    assert router.count("serving.serving_endpoints.query(") == 1             # every call goes through _predict
+    assert "ws.serving_endpoints" not in router
+    assert '@router.post("/warmup"' in router and "client_request_id=config.WARMUP_REQUEST_ID" in router
+    for status in (429, 502, 503):
+        assert f"_endpoint_error({status}," in router, status
+    for field in ("daily_job_id=settings.daily_job_id", "serving_timeout_s=config.SERVING_TIMEOUT_S",
+                  "warmup_interval_s=config.WARMUP_INTERVAL_S"):
+        assert field in router, field
+    ui = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "ui" / "routes" / "index.tsx").read_text()
+    assert "const UI_MARGIN_S = 10;" in ui and "2 * (cfg.serving_timeout_s + UI_MARGIN_S)" in ui
+    for text in ("Cancel</Button>", "Retry</Button>", "New reading", "Reading…", "Each ECG is read in and scored live",
+                 "Synthetic, non-PII", 'document.addEventListener("visibilitychange"', "c.daily_job_id"):
+        assert text in ui, text
+    api = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "ui" / "lib" / "api.ts").read_text()
+    for generated in ("export const warmup = async", "daily_job_id: string | null;", "serving_timeout_s: number;",
+                      "export interface ServingError {"):
+        assert generated in api, generated                                 # the TS client was regenerated
 
 
 def test_deploy_script_is_valid_bash_and_reads_endpoint_names_from_config():
@@ -290,7 +321,7 @@ def test_dashboard_has_separate_batch_and_live_sections_on_bare_tables():
     dashboard = json.loads(DASHBOARD.read_text())
     sql = {d["name"]: "".join(d["queryLines"]) for d in dashboard["datasets"]}
     batch = {"funnel", "arrivals", "triage_accuracy", "prob_hist", "trend", "afib_by_age", "worklist"}
-    live = {"live_requests", "live_predictions"}
+    live = {"live_requests", "live_predictions", "live_warmups"}
     assert set(sql) == batch | live
     assert not any({"catalog", "schema"} & set(d) for d in dashboard["datasets"])   # the bundle sets them
     history, results = config.TRIAGE_HISTORY_TABLE, config.INFERENCE_TABLE
@@ -309,7 +340,12 @@ def test_dashboard_has_separate_batch_and_live_sections_on_bare_tables():
     assert latest not in sql["trend"] and results in sql["trend"]                # the trend: every day
     assert "acquisition_datetime_utc" in sql["arrivals"] and "mrn" in sql["worklist"]
     for table in payloads:
-        assert table in sql["live_requests"] and table in sql["live_predictions"]
+        assert table in sql["live_requests"] and table in sql["live_predictions"] and table in sql["live_warmups"]
+    # The app's warm-up pings: left out of every live tile (NULL client_request_id kept), counted apart.
+    not_warmup = f"client_request_id IS DISTINCT FROM '{config.WARMUP_REQUEST_ID}'"
+    assert sql["live_requests"].count(not_warmup) == sql["live_predictions"].count(not_warmup) == 2
+    assert sql["live_warmups"].count(f"client_request_id = '{config.WARMUP_REQUEST_ID}'") == 2
+    assert not_warmup not in sql["live_warmups"]
     # Only the response JSON is parsed; the request JSON (the ECG) is only measured.
     assert "from_json(request" not in sql["live_requests"] + sql["live_predictions"]
     assert "length(request)" in sql["live_requests"]
@@ -328,7 +364,7 @@ def test_dashboard_has_separate_batch_and_live_sections_on_bare_tables():
     assert "until AI Gateway has delivered the first inference-table logs" in headers["hdr-live"]
     widgets = {item["widget"]["name"]: item for item in layout}
     assert {"triage-bar", "afib-age-bar", "worklist-table", "arrivals-bar", "live-volume", "live-exec",
-            "live-arr-prob", "live-afib-prob", "live-table"} <= set(widgets)
+            "live-arr-prob", "live-afib-prob", "live-table", "kpi-warmups"} <= set(widgets)
     # Every batch widget sits above the live header, every live widget below it.
     live_y = widgets["hdr-live"]["position"]["y"]
     for name, item in widgets.items():

@@ -6,7 +6,8 @@ Delta-specific writes are covered by test_scoring_and_io.py), and MLflow: a fake
 fake ``mlflow.pyfunc.load_model`` returning models with the real output schemas, so 07_ / 08_ really
 score on the driver with scoring.score_driver_side. Checks the table contents each notebook writes,
 that re-running a date does not duplicate rows, and that the dashboard's SQL runs (ANSI mode, as on
-a SQL warehouse) and gives the latest day's funnel. Skipped without a local pyspark + Java."""
+a SQL warehouse), gives the latest day's funnel and leaves the app's warm-up pings out of the live
+tiles. Skipped without a local pyspark + Java."""
 import datetime as dt
 import json
 import sys
@@ -155,12 +156,14 @@ def _check_day(uc, day):
 
 
 def _payload_tables(spark):
-    """Stand-ins for the two AI Gateway inference tables: the logged columns and one request each,
-    with the response JSON in each endpoint's format."""
+    """Stand-ins for the two AI Gateway inference tables: the logged columns, one scored request
+    (no client_request_id, as from /api/analyze) and one app warm-up ping each, with the response
+    JSON in each endpoint's format."""
     import pyspark.sql.types as T
 
     schema = T.StructType([
-        T.StructField("databricks_request_id", T.StringType()), T.StructField("request_time", T.TimestampType()),
+        T.StructField("databricks_request_id", T.StringType()), T.StructField("client_request_id", T.StringType()),
+        T.StructField("request_time", T.TimestampType()),
         T.StructField("status_code", T.IntegerType()), T.StructField("execution_duration_ms", T.LongType()),
         T.StructField("request", T.StringType()), T.StructField("response", T.StringType()),
         T.StructField("logging_error_codes", T.ArrayType(T.StringType()))])
@@ -168,8 +171,12 @@ def _payload_tables(spark):
     request = json.dumps({"inputs": [[[0.0] * 4] * 12]})
     responses = {config.ARR_ENDPOINT: {"predictions": [{"arr_prob": 0.9, "arr_flag": 1.0}]},
                  config.AFIB_ENDPOINT: {"predictions": [[0.2, 0.8]]}}
+    warmup = {config.ARR_ENDPOINT: {"predictions": [{"arr_prob": 0.1, "arr_flag": 0.0}]},
+              config.AFIB_ENDPOINT: {"predictions": [[0.6, 0.4]]}}
     return {config.payload_table_name(endpoint): spark.createDataFrame(
-                [(f"req-{endpoint}", when, 200, 40, request, json.dumps(response), None)], schema)
+                [(f"req-{endpoint}", None, when, 200, 40, request, json.dumps(response), None),
+                 (f"ping-{endpoint}", config.WARMUP_REQUEST_ID, when, 200, 35, request,
+                  json.dumps(warmup[endpoint]), None)], schema)
             for endpoint, response in responses.items()}
 
 
@@ -222,7 +229,13 @@ def test_daily_notebooks_end_to_end_rerun_safe_and_the_dashboard_queries_run(spa
     assert sorted(out["trend"]["date"]) == sorted(triaged)                        # every day
     assert set(out["worklist"]["batch_date"]) == {latest} and len(out["worklist"]) == min(25, len(day_results))
     arr_label, afib_label = f"{config.ARR_ENDPOINT} (triage)", f"{config.AFIB_ENDPOINT} (classify)"
+    # The warm-up pings are left out of the live tiles and only counted.
     assert sorted(out["live_requests"]["endpoint"]) == sorted([arr_label, afib_label])
+    assert set(out["live_requests"]["databricks_request_id"]) == {f"req-{config.ARR_ENDPOINT}",
+                                                                  f"req-{config.AFIB_ENDPOINT}"}
     assert set(out["live_requests"]["not_logged"]) == {0}
+    assert len(out["live_predictions"]) == 2
     scores = dict(zip(out["live_predictions"]["endpoint"], out["live_predictions"]["score"]))
     assert scores == {arr_label: 0.9, afib_label: 0.8}
+    assert sorted(out["live_warmups"]["databricks_request_id"]) == sorted(
+        [f"ping-{config.ARR_ENDPOINT}", f"ping-{config.AFIB_ENDPOINT}"])

@@ -2,8 +2,17 @@
 
 A home for biosignal projects on Databricks: physiological time series such as the
 electrocardiogram (ECG), electroencephalogram (EEG), photoplethysmogram (PPG, the pulse signal
-from optical sensors), electromyogram (EMG) and wearable sensor streams. Projects cover the
-steps such work usually needs:
+from optical sensors), electromyogram (EMG) and wearable sensor streams.
+
+[![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
+[![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
+[![Serverless](https://img.shields.io/badge/Serverless-Compute-00C851?style=for-the-badge)](https://docs.databricks.com/en/compute/serverless.html)
+
+> **Synthetic data, not for clinical use.** See [Disclaimer](#disclaimer).
+
+## Projects
+
+Projects cover the steps biosignal work usually needs:
 
 - **Ingest** waveforms from the formats they arrive in, for example DICOM waveform objects,
   PhysioNet's WFDB, the European Data Format (EDF), HL7 annotated ECG (aECG) and device vendors'
@@ -16,14 +25,6 @@ steps such work usually needs:
 Each project covers part or all of this. The first, `ecg12-afib`, generates synthetic ECGs and
 covers modeling and use; ingest from real-world formats and signal processing are open for new
 projects (see [Contributing](#contributing)). Each project's README credits its contributors.
-
-[![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
-[![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
-[![Serverless](https://img.shields.io/badge/Serverless-Compute-00C851?style=for-the-badge)](https://docs.databricks.com/en/compute/serverless.html)
-
-> **Synthetic data, not for clinical use.** See [Disclaimer](#disclaimer).
-
-## Projects
 
 | Project | What it shows |
 |---|---|

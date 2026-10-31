@@ -48,7 +48,7 @@ creates billable resources; see [Cost](docs/deploy.md#cost) and [Teardown](docs/
 
 | Page | What it covers |
 |---|---|
-| [Architecture](docs/architecture.md) | Folder layout, notebooks and jobs, batch vs live scoring |
+| [How it works](docs/architecture.md) | A sketch of the workflows, folder layout, notebooks and jobs, batch vs live scoring |
 | [Model lifecycle](docs/model-lifecycle.md) | Challenger, validation gate, champion; thresholds and evaluation charts |
 | [Data](docs/data.md) | The synthetic 12-lead signal and patient record |
 | [Dashboard](docs/dashboard.md) | Dashboard sections and the tables behind them |

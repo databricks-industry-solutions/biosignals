@@ -1,6 +1,39 @@
-# Architecture: folders, notebooks, jobs, batch vs live
+# How it works: workflows, folders and scoring paths
 
 [← ecg12-afib README](../README.md)
+
+## Sketch
+
+Two Lakeflow jobs (workflows) feed one app and one dashboard. Every table and model sits in your
+Unity Catalog catalog and schema.
+
+```mermaid
+%%{init: {'theme':'neutral'}}%%
+flowchart LR
+  subgraph SETUP["SETUP job (run first, and again to retrain)"]
+    direction TB
+    g1["01 generate training data"] --> td[("training_data_12l<br/>train / val / holdout")]
+    td --> t1["02 train ARR model"] & t2["03 train AFib model"]
+    t1 & t2 -->|"@challenger"| v["04 validate on holdout<br/>both pass or neither"]
+    v -->|"@champion"| s["05 serve endpoints"]
+  end
+  subgraph DAILY["DAILY job (paused schedule)"]
+    direction TB
+    g2["06 simulate incoming batch"] --> bd[("batch_data_12l_&lt;date&gt;")]
+    bd --> a["07 ARR triage"] --> ah[("arr_triage_history_12l")]
+    a --> c["08 AFib classify (flagged only)"] --> inf[("dailyOrweekly_arr_afib_inference_12l")]
+  end
+  s --> ep["Serving endpoints<br/>&lt;prefix&gt;_arr, &lt;prefix&gt;_afib"]
+  ep --> pay[("&lt;model&gt;_payload<br/>request logs")]
+  app["Databricks App<br/>live triage"] -->|"each ECG"| ep
+  v -.->|"@champion models"| a & c
+  ah & inf --> dash["AI/BI dashboard"]
+  pay --> dash
+  dash -.->|"embedded"| app
+```
+
+The batch path loads the `@champion` models and scores on the job's driver; only the app calls
+the endpoints, so live requests show up in the request-log tables and batch scoring does not.
 
 ## Layout
 

@@ -57,7 +57,7 @@ ARR_FLAG_THRESHOLD = 0.5            # arr_flag = 1.0 when arr_prob >= this
 AFIB_THRESHOLD = 0.5                # "AFib" when p_afib > this
 
 # --- Spark-worker scoring (scoring.score_spark_udf; not used by the notebooks yet) -----------
-# The daily notebooks score on the driver. For the Spark-worker path (README, "Future work"): on
+# The daily notebooks score on the driver. For the Spark-worker path (docs/future-work.md): on
 # serverless compute a Python UDF gets 1 GB of memory, and one ECG is 12 x 2500 float32 values
 # (120 KB), so each model call gets at most this many ECGs (~30 MB).
 BATCH_UDF_ROWS_PER_PARTITION = 256

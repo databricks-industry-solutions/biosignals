@@ -10,7 +10,7 @@ batch scoring (07_arr_triage, 08_afib_classify).
   version instead (each ECG's 12 per-lead columns as one flattened array, reshaped by spark_udf
   to the (-1, 12, 2500) signature; ``cap_arrow_batch_rows`` caps the ECGs per model call;
   ``torch_cpu_wheels`` points the workers' environment build at PyTorch's CPU wheels). No job
-  uses it: it is tested locally only (README.md, "Future work").
+  uses it: it is tested locally only (docs/future-work.md).
 * Both return the same columns in the same order and types: the input columns (id first), the
   model's result columns (DOUBLE), then the ``*_model_info`` column.
 * ``arr_columns`` / ``afib_columns`` (driver side) and ``arr_udf_columns`` /

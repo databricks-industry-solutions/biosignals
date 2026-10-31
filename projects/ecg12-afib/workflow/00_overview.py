@@ -192,5 +192,5 @@
 # MAGIC
 # MAGIC **Deploy / run (bundle `biosignals-ecg12-afib`):** jobs + dashboard from the workspace bundle
 # MAGIC editor (target `no_app`, the default), or everything including the app with `deploy.sh` from a
-# MAGIC laptop (target `full`). Run the SETUP job first, then the DAILY job. The project `README.md` has
-# MAGIC the variables, both deploy paths, the permissions and the teardown.
+# MAGIC laptop (target `full`). Run the SETUP job first, then the DAILY job. The project's
+# MAGIC `docs/deploy.md` has the variables, both deploy paths, the permissions and the teardown.

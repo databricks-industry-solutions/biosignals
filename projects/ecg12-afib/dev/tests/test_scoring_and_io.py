@@ -1,6 +1,6 @@
 """Tests for config.py, scoring.py and uc_io.py (Spark and MLflow replaced by small fakes, plus
 one check of the Spark-worker path against the real mlflow.pyfunc.spark_udf when mlflow is installed;
-no job uses that path yet, see README.md "Future work")."""
+no job uses that path yet, see docs/future-work.md)."""
 import datetime as dt
 import os
 from types import SimpleNamespace

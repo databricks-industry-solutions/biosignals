@@ -192,7 +192,7 @@ def test_training_reads_the_persisted_dataset_and_logs_thoroughly(name):
 @pytest.mark.parametrize("name", BATCH)
 def test_batch_scoring_is_driver_side_at_the_pinned_champion(name):
     """07_ / 08_ resolve champion to a version, load exactly that version and score on the driver
-    with score_driver_side, as the gate does; no spark_udf (README.md, "Future work")."""
+    with score_driver_side, as the gate does; no spark_udf (docs/future-work.md)."""
     code = _python_source(WORKFLOW / name)
     kind = "arr" if name.startswith("07") else "afib"
     assert f"{kind} = scoring.resolve_alias(MlflowClient(registry_uri=\"databricks-uc\"), {kind}_model_full)" in code

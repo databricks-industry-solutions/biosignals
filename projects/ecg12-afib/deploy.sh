@@ -24,7 +24,8 @@
 #      there. --skip-embed-allowlist makes no settings call at all and prints what an admin must add.
 #
 # Re-running is safe: every step updates in place (SETUP retrains and re-gates the models).
-# Remove everything with: databricks bundle destroy -t full -p <profile> --var ... (see README.md).
+# Remove everything with: databricks bundle destroy -t full -p <profile> --var ... (see
+# docs/deploy.md, Teardown).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -95,7 +96,7 @@ APP_NAME="${APP_NAME:-ecg12-demo}"
 # ---------------------------------------------------------------------------------------------
 step "1/8 prerequisites"
 for cmd in apx uv databricks jq python3; do
-  command -v "$cmd" >/dev/null || fail "'$cmd' is not on PATH (see README.md, Prerequisites)."
+  command -v "$cmd" >/dev/null || fail "'$cmd' is not on PATH (see docs/deploy.md, Path 2 prerequisites)."
 done
 apx_version=$(apx --version 2>/dev/null | grep -Eo 'apx [0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -n 1 || true)
 [[ "$apx_version" == "apx 0.3.8" ]] || fail "need apx 0.3.8 exactly, found '${apx_version:-none}'."

@@ -54,7 +54,7 @@ creates billable resources; see [Cost](docs/deploy.md#cost) and [Teardown](docs/
 | [Data](docs/data.md) | The synthetic 12-lead signal and patient record |
 | [Dashboard](docs/dashboard.md) | Dashboard sections and the tables behind them |
 | [Deploy](docs/deploy.md) | Settings, both deploy paths, permissions, cost, teardown |
-| [Future work](docs/future-work.md) | Ideas not built yet |
-| [Third-party licenses](docs/third-party-licenses.md) | Packages, versions, licenses and sources |
 | [App](app/README.md) | Building the app |
 | [Developer tools](dev/README.md) | Analysis scripts and optional local checks |
+| [Future work](docs/future-work.md) | Ideas not built yet |
+| [Third-party licenses](docs/third-party-licenses.md) | Packages, versions, licenses and sources |

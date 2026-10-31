@@ -35,21 +35,23 @@ jobs:
           pip install --upgrade pip
           pip install nbconvert jupyter-book sphinx markdown beautifulsoup4
 
+      # Renders the root README.md, each projects/<project>/README.md and every project notebook
+      # (Databricks .py source notebooks and .ipynb under projects/) into one page. There is no
+      # root notebooks/ folder: each project keeps its notebooks in its own folder.
       - name: Convert notebooks and create single-page app
         run: |
           mkdir -p site
-          
-          # Convert .ipynb notebooks to HTML fragments (body content only)
-          for notebook in notebooks/*.ipynb; do
-              if [ -f "$notebook" ]; then
-                  jupyter nbconvert "$notebook" --to html \
-                    --template classic --HTMLExporter.theme=light \
-                    --no-prompt --stdout > "temp_$(basename "$notebook" .ipynb).html"
-              fi
+
+          # Convert .ipynb notebooks to HTML fragments (body content only), named <project>__<notebook>
+          find projects -name '*.ipynb' -not -path '*/node_modules/*' -not -path '*/.ipynb_checkpoints/*' |
+          while read -r notebook; do
+              project=$(echo "$notebook" | cut -d/ -f2)
+              jupyter nbconvert "$notebook" --to html \
+                --template classic --HTMLExporter.theme=light \
+                --no-prompt --stdout > "temp_${project}__$(basename "$notebook" .ipynb).html"
           done
-          
+
           # Convert .py Databricks notebooks to HTML fragments
-          chmod +x .github/scripts/convert_notebooks.py
           python3 .github/scripts/convert_notebooks.py
           
           # Create single-page application with embedded content
@@ -61,11 +63,20 @@ jobs:
           import glob
           from bs4 import BeautifulSoup
           
+          md_extensions = ['tables', 'fenced_code']
+
           # Read README.md
           readme_content = ""
           if os.path.exists('README.md'):
               with open('README.md', 'r') as f:
-                  readme_content = markdown.markdown(f.read())
+                  readme_content = markdown.markdown(f.read(), extensions=md_extensions)
+
+          # Read each project's README.md (section id: project__readme)
+          project_readmes = {}
+          for path in sorted(glob.glob('projects/*/README.md')):
+              project = path.split('/')[1]
+              with open(path, 'r') as f:
+                  project_readmes[project] = markdown.markdown(f.read(), extensions=md_extensions)
           
           # Get repository name and format title
           repo_name = os.environ.get('GITHUB_REPOSITORY', '').split('/')[-1]
@@ -326,12 +337,19 @@ jobs:
                   <div class="sidebar">
                       <h3>📚 Documentation</h3>
                       <div class="nav-link active" onclick="showSection('readme')">Overview</div>'''
-          
+
+          # Add project navigation
+          if project_readmes:
+              html += '\n            <h3 style="margin-top: 30px;">📁 Projects</h3>'
+              for project in project_readmes:
+                  html += f'\n            <div class="nav-link" onclick="showSection(\'{project}__readme\')">📁 {project}</div>'
+
           # Add notebook navigation
           if notebooks:
               html += '\n            <h3 style="margin-top: 30px;">📓 Notebooks</h3>'
               for name in sorted(notebooks.keys()):
-                  display_name = name.replace('_', ' ').title()
+                  project, _, notebook = name.partition('__')
+                  display_name = f"{project}: {notebook.replace('_', ' ')}" if notebook else name.replace('_', ' ').title()
                   html += f'\n            <div class="nav-link" onclick="showSection(\'{name}\')">📓 {display_name}</div>'
           
           html += f'''
@@ -343,6 +361,14 @@ jobs:
                           {readme_content}
                       </div>'''
           
+          # Add project README sections
+          for project, content in project_readmes.items():
+              html += f'''
+                      <!-- {project} README Section -->
+                      <div id="{project}__readme" class="content-section">
+                          {content}
+                      </div>'''
+
           # Add notebook sections
           for name, content in notebooks.items():
               html += f'''

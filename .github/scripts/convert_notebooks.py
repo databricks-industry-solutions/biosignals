@@ -102,12 +102,21 @@ def convert_to_html_fragment(filepath):
     return name_without_ext, fragment_content
 
 
+def is_databricks_notebook(filepath):
+    """Databricks .py source notebooks start with this header line; other .py files are code."""
+    with open(filepath, 'r') as f:
+        return f.readline().strip() == "# Databricks notebook source"
+
+
 if __name__ == "__main__":
-    # Process all .py files in notebooks directory
+    # Every Databricks .py notebook under projects/<project>/, named <project>__<notebook>
     notebook_data = {}
-    for py_file in glob.glob('notebooks/*.py'):
+    for py_file in sorted(glob.glob('projects/*/**/*.py', recursive=True)):
+        if 'node_modules' in py_file.split(os.sep) or not is_databricks_notebook(py_file):
+            continue
         name, fragment = convert_to_html_fragment(py_file)
-        notebook_data[name] = fragment
+        project = py_file.split(os.sep)[1]
+        notebook_data[f"{project}__{name}"] = fragment
         print(f"Converted {py_file} to HTML fragment")
     
     # Write notebook data to a JSON file for the main script

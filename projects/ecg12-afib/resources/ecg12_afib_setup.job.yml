@@ -1,0 +1,74 @@
+# SETUP job: the model cycle, data first, with a validation gate before anything is served.
+# Run once, and again to retrain.
+#   01_generate_training_data -> training_data_12l (train / val / holdout)       standard serverless
+#   02_train_arr_model        -> bio_ecg12_arr new version @challenger           serverless GPU (A10 / AI v5)
+#   03_train_afib_model       -> bio_ecg12_afib new version @challenger          serverless GPU (A10 / AI v5)
+#                                (02_ and 03_ run in parallel, both after 01_)
+#   04_validate_and_promote   -> both challengers scored on holdout vs the thresholds in common/config.py
+#                                (+ hold-out evaluation artifacts in MLflow); both pass -> @champion moves
+#                                to them, else the task fails and the job stops here
+#                                                                                 serverless GPU (A10 / AI v5)
+#   05_serve_endpoints        -> endpoints bio_ecg12_arr + bio_ecg12_afib at @champion, AI Gateway
+#                                inference tables                                 standard serverless
+# The DAILY job (ecg12_afib_daily.job.yml) scores with the champion models; run this job first.
+# Names come from common/config.py; the first 12-lead run's arr_model_12l / afib_demo_12l and the live
+# 8-lead arr_model_mmt / afib_demo_mmt models and endpoints are not touched.
+resources:
+  jobs:
+    ecg12_afib_setup:
+      # dev target (mode: development) prefixes "[dev <user>]".
+      name: biosignals_ecg12_afib_setup
+
+      # Job parameters are passed to every task's notebook widgets of the same name.
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog}
+        - name: schema_name
+          default: ${var.schema}
+
+      # Serverless GPU AI v5 environment (A10, torch, CUDA) for the PyTorch training and gate tasks.
+      environments:
+        - environment_key: aiv5
+          spec:
+            base_environment: databricks_ai_v5
+
+      tasks:
+        - task_key: generate_training_data
+          notebook_task:
+            notebook_path: ../workflow/01_generate_training_data.py
+
+        - task_key: train_arr_model
+          depends_on:
+            - task_key: generate_training_data
+          notebook_task:
+            notebook_path: ../workflow/02_train_arr_model.py
+          environment_key: aiv5
+          compute:
+            hardware_accelerator: GPU_1xA10
+
+        - task_key: train_afib_model
+          depends_on:
+            - task_key: generate_training_data
+          notebook_task:
+            notebook_path: ../workflow/03_train_afib_model.py
+          environment_key: aiv5
+          compute:
+            hardware_accelerator: GPU_1xA10
+
+        # The gate: runs only when both training tasks succeeded (run_if default ALL_SUCCESS), and
+        # fails (stopping serve_endpoints) when either challenger misses its thresholds.
+        - task_key: validate_and_promote
+          depends_on:
+            - task_key: train_arr_model
+            - task_key: train_afib_model
+          notebook_task:
+            notebook_path: ../workflow/04_validate_and_promote.py
+          environment_key: aiv5
+          compute:
+            hardware_accelerator: GPU_1xA10
+
+        - task_key: serve_endpoints
+          depends_on:
+            - task_key: validate_and_promote
+          notebook_task:
+            notebook_path: ../workflow/05_serve_endpoints.py

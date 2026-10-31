@@ -1,9 +1,11 @@
 # Databricks Asset Bundle files
 .databricks/
 
-# IDE files
+# IDE / editor files
 .vscode/
 .idea/
+.cursor/
+*.code-workspace
 *.swp
 *.swo
 
@@ -18,10 +20,29 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Test coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
+# JavaScript
+node_modules/
+
+# App build output (apx): compiled UI, wheel, build folder
+__dist__/
+projects/*/app/.build/
+projects/*/app/.apx/
+
 # Environment files
 .env
-.env.local 
+.env.local

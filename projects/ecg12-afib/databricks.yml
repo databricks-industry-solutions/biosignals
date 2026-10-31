@@ -1,0 +1,78 @@
+# Declarative Automation Bundle (DABs): 12-lead ECG/AFib demo — APX app + SETUP job + DAILY job.
+#
+# Separate from the live 8-lead `ekg-demo` app on purpose: its own bundle name, app name, model
+# and endpoint names (common/config.py) and deployed source path, so nothing here can touch
+# `ekg-demo` (/Workspace/Users/<user>/apps/ekg_demo_react_build) or arr_model_mmt / afib_demo_mmt.
+#
+# You supply only the END of the app's name: the deployed name is always
+# `ecg12-demo-<app_suffix>` (see variables.app_suffix). Pass it on every command, e.g.:
+#   databricks bundle validate --strict -p fevm-mmt-aws-usw2 --var app_suffix=<suffix>
+#   databricks bundle deploy -t dev -p fevm-mmt-aws-usw2 --var app_suffix=<suffix>
+# (or export BUNDLE_VAR_app_suffix=<suffix>). Validate needs app/.build: run
+# app/build_from_lockfiles.sh first; deploy runs that build itself.
+bundle:
+  name: biosignals-ecg12-afib
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for the demo tables and models (default = common/config.py CATALOG).
+    default: mmt_aws_usw2_catalog
+  schema:
+    description: Unity Catalog schema for the demo tables and models (default = common/config.py SCHEMA).
+    default: biosignals
+  # !!! WARNING: app names are workspace-global. Reusing the name of a deployed app risks
+  # !!! overwriting that app with this bundle's code. The name MUST be unique: do NOT reuse
+  # !!! `ekg-demo`, `ekg12-demo-mmt` or any other already-deployed app name.
+  # !!! Check first:  databricks apps list -p fevm-mmt-aws-usw2
+  # The deployed name is the fixed prefix `ecg12-demo-` + this suffix (resources.apps below), so
+  # it can never be `ekg-demo` or any other app whose name does not start with that prefix
+  # (none did on 2026-10-30; the earlier manual deploy of this demo, `ekg12-demo-mmt`, predates
+  # this prefix). Only another deploy of this bundle uses the prefix, so pick a
+  # suffix that no `ecg12-demo-...` app already uses. dev/tests/test_repo_consistency.py checks
+  # the prefix stays fixed. Length: app names are at most 30 characters and the prefix takes 11, so the
+  # suffix can be at most 19 (lowercase letters, digits, hyphens).
+  # No default on purpose, so a deploy can never silently pick a name.
+  app_suffix:
+    description: >-
+      REQUIRED. Suffix appended after the fixed `ecg12-demo-` prefix to name the NEW 12-lead app
+      (ecg12-demo-<app_suffix>). Lowercase letters, digits and hyphens, at most 19 characters.
+    # Suggested value (renders ecg12-demo-mmt, unused on 2026-10-30); uncomment only after
+    # re-checking `apps list`:
+    # default: mmt   # your initials, or a descriptive suffix
+
+# apx writes `.gitignore` (`*`) into its build dir, so sync would skip it without this include.
+# dev/ holds developer analysis scripts and the optional local tests (dev/README.md): never
+# deployed with the bundle.
+sync:
+  include:
+    - app/.build
+  exclude:
+    - dev/**
+
+# Runs in ./app. The script is `apx build` pinned to the committed bun.lock / uv.lock; plain
+# `apx build` (0.3.8) bumps its own build deps to @latest and currently fails (see app/README.md).
+artifacts:
+  ecg12_afib_app:
+    path: ./app
+    build: ./build_from_lockfiles.sh
+
+resources:
+  apps:
+    ecg12_afib_app:
+      # Fixed prefix + user-supplied suffix: never a bare user value, so never `ekg-demo`.
+      name: ecg12-demo-${var.app_suffix}
+      description: "ECG/AFib 12-lead platform-showcase demo (APX React + FastAPI)"
+      # Deployed to /Workspace/Users/<user>/.bundle/biosignals-ecg12-afib/<target>/files/app/.build,
+      # this bundle's own folder (never the live app's ekg_demo_react_build).
+      source_code_path: ./app/.build
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://fevm-mmt-aws-usw2.cloud.databricks.com
+      profile: fevm-mmt-aws-usw2

@@ -119,14 +119,15 @@ def me(user_ws: Dependencies.UserClient):
 def app_config(settings: Dependencies.Config, ws: Dependencies.Client):
     """Deep-link names for the UI: the workspace from the app's own credentials (the Apps runtime
     sets DATABRICKS_HOST / DATABRICKS_WORKSPACE_ID), the Unity Catalog location and dashboard from
-    the app's environment (AppConfig), the model and endpoint names from common/config.py."""
+    the app's environment (AppConfig), the endpoint names from its endpoint prefix
+    (AppConfig.endpoints) and the model names from common/config.py."""
     return AppConfigOut(
         workspace_host=(ws.config.host or "").rstrip("/"),
         workspace_id=str(ws.get_workspace_id()),
         catalog=settings.catalog,
         uc_schema=settings.uc_schema,
-        arr_endpoint=config.ARR_ENDPOINT,
-        afib_endpoint=config.AFIB_ENDPOINT,
+        arr_endpoint=settings.endpoints[0],
+        afib_endpoint=settings.endpoints[1],
         arr_model=config.ARR_MODEL_NAME,
         afib_model=config.AFIB_MODEL_NAME,
         inference_table=config.INFERENCE_TABLE.lower(),
@@ -169,12 +170,13 @@ def generate(req: GenerateRequest):
 
 
 @router.post("/analyze", response_model=AnalyzeResponse, operation_id="analyze", responses=ENDPOINT_ERRORS)
-def analyze(req: AnalyzeRequest, serving: ServingClient):
+def analyze(req: AnalyzeRequest, serving: ServingClient, settings: Dependencies.Config):
     """Triage (arr) then, if flagged, classify (afib) via the live serving endpoints.
 
     All N_LEADS leads go to both models, as a (1, N_LEADS, N_SAMPLES) tensor. Each call is bounded
     by SERVING_TIMEOUT_S (see _ServingClientDependency), so this request makes at most two bounded
     calls."""
+    arr_endpoint, afib_endpoint = settings.endpoints    # this deployment's names (endpoint_prefix)
     ecg = np.asarray(req.ecg, dtype=np.float32)
     if ecg.shape != (config.N_LEADS, N_SAMPLES):
         raise HTTPException(
@@ -182,20 +184,20 @@ def analyze(req: AnalyzeRequest, serving: ServingClient):
             detail=f"ecg must be {config.N_LEADS} leads x {N_SAMPLES} samples, got {list(ecg.shape)}",
         )
     inputs = ecg[None, :, :].tolist()
-    arr = _predict(serving, config.ARR_ENDPOINT, inputs)
+    arr = _predict(serving, arr_endpoint, inputs)
     arr_flag = float(arr["arr_flag"])
     flagged = arr_flag == 1.0
     out = AnalyzeResponse(
         arr_flag=arr_flag, arr_prob=float(arr["arr_prob"]), flagged=flagged,
-        arr_model=config.ARR_ENDPOINT,
+        arr_model=arr_endpoint,
     )
     if flagged:
         # The AFib model takes the same ecg tensor and returns [p_not_afib, p_afib].
-        af = _predict(serving, config.AFIB_ENDPOINT, inputs)
+        af = _predict(serving, afib_endpoint, inputs)
         p_afib = float(af[1])
         out.p_afib = p_afib
         out.afib_label = "AFib" if p_afib > config.AFIB_THRESHOLD else "not AFib"
-        out.afib_model = config.AFIB_ENDPOINT
+        out.afib_model = afib_endpoint
     return out
 
 
@@ -221,7 +223,7 @@ def _ping(serving: WorkspaceClient, endpoint: str, inputs: list) -> EndpointStat
 
 
 @router.post("/warmup", response_model=WarmupResponse, operation_id="warmup")
-def warmup(serving: ServingClient):
+def warmup(serving: ServingClient, settings: Dependencies.Config):
     """Wake both endpoints, or keep them awake: ONE single-ECG request to each, in parallel, each
     bounded by SERVING_TIMEOUT_S like /analyze. Always 200, with each endpoint's status.
 
@@ -230,7 +232,7 @@ def warmup(serving: ServingClient):
     config.WARMUP_REQUEST_ID to tell it apart from a scored ECG; the dashboard's live-serving
     section leaves those rows out and counts them separately."""
     inputs = _warmup_inputs()   # built once per worker (the first build takes seconds), never timed
-    endpoints = [config.ARR_ENDPOINT, config.AFIB_ENDPOINT]
+    endpoints = list(settings.endpoints)
     with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
         statuses = list(pool.map(lambda endpoint: _ping(serving, endpoint, inputs), endpoints))
     return WarmupResponse(endpoints=statuses)

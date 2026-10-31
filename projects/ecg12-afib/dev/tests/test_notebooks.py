@@ -212,6 +212,21 @@ def test_triage_writes_the_history_slice_the_dashboard_reads():
             in code)
 
 
+def test_serving_never_takes_over_another_deployments_endpoint():
+    """05_ names the endpoints from the endpoint_prefix parameter, refuses (before changing either)
+    an existing endpoint that serves anything but this deployment's <catalog>.<schema>.<model>, and
+    names the inference tables by model, not by endpoint."""
+    code = _python_source(WORKFLOW / "05_serve_endpoints.py")
+    assert 'dbutils.widgets.text("endpoint_prefix", config.ENDPOINT_PREFIX, label="endpoint_prefix")' in code
+    assert 'arr_endpoint, afib_endpoint = config.endpoint_names(dbutils.widgets.get("endpoint_prefix"))' in code
+    assert "served = served_models(w.serving_endpoints.get(name=endpoint_name))" in code
+    assert "if served != {full}:" in code and "raise RuntimeError(" in code and "endpoint_prefix" in code
+    # The check runs for both endpoints (its own cell) before the first create / update call.
+    assert code.index("if served != {full}:") < code.index("full, ver = deploy(model_name, endpoint_name, existing)")
+    assert "table_name_prefix=model_name" in code and "table_name_prefix=endpoint_name" not in code
+    assert "config.payload_table(model_name, catalog, schema)" in code
+
+
 def test_gate_logs_holdout_evaluation_artifacts_with_the_synthetic_caption():
     """04_ logs a confusion matrix, ROC + precision-recall curves, a per-class table and a README per
     model from the scores it already computed (one scoring pass), each carrying the caption."""

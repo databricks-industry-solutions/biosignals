@@ -4,9 +4,10 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
 `readme` here, so the wheel build needs this file.
 
 - **Backend** (`src/ecg_demo_react/backend/`): `/api/generate` returns a synthetic 12-lead ECG,
-  its lead names and a synthetic patient record; `/api/analyze` sends all 12 leads to the
-  `bio_ecg12_arr` endpoint and, when flagged, to `bio_ecg12_afib` (app service-principal identity,
-  `WorkspaceClient()`; names from `common/config.py`, each endpoint named after its model);
+  its lead names and a synthetic patient record; `/api/analyze` sends all 12 leads to the triage
+  endpoint `<endpoint_prefix>_arr` and, when flagged, to the classify endpoint
+  `<endpoint_prefix>_afib` (app service-principal identity; `common/config.endpoint_names` on the
+  app's `ECG_DEMO_REACT_ENDPOINT_PREFIX`, default `bio_ecg12`);
   `/api/warmup` sends one single-ECG request to each endpoint (tagged `client_request_id =
   app-warmup`) and returns each one's status (`ready` / `cold` / `error`); `/api/app-config` gives
   the UI its deep-link names (endpoint and model pages, the DAILY job, the `@champion` label) and its
@@ -21,10 +22,12 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
   Retry.
 - **Configuration** comes from the app's environment, not the code (`backend/core/_config.py`,
   prefix `ECG_DEMO_REACT_`): `ECG_DEMO_REACT_CATALOG` (required; the app does not start without
-  it), `ECG_DEMO_REACT_UC_SCHEMA` (default `biosignals`) and `ECG_DEMO_REACT_DASHBOARD_ID`
-  (optional; without it the Batch tab shows a "Dashboard not configured" note) and
-  `ECG_DEMO_REACT_DAILY_JOB_ID` (optional; the header's Lakeflow link opens that job, else the
-  jobs list). The bundle's `full` target sets all four (`../databricks.yml`,
+  it), `ECG_DEMO_REACT_UC_SCHEMA` (default `biosignals`), `ECG_DEMO_REACT_ENDPOINT_PREFIX` (default
+  `bio_ecg12`: the serving endpoints `<prefix>_arr` / `<prefix>_afib`; a value an endpoint name
+  cannot hold stops the app at startup), `ECG_DEMO_REACT_DASHBOARD_ID` (optional; without it the
+  Batch tab shows a "Dashboard not configured" note) and `ECG_DEMO_REACT_DAILY_JOB_ID` (optional;
+  the header's Lakeflow link opens that job, else the jobs list). The bundle's `full` target sets
+  all five (`../databricks.yml`,
   `resources.apps.ecg12_afib_app.config.env`), the two ids from the dashboard and DAILY job it
   deploys. The workspace host and id come from the app's own
   credentials, which the Databricks Apps runtime provides.

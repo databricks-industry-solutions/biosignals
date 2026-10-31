@@ -8,11 +8,11 @@
 #                                (+ hold-out evaluation artifacts in MLflow); both pass -> @champion moves
 #                                to them, else the task fails and the job stops here
 #                                                                                 serverless GPU (A10 / AI v5)
-#   05_serve_endpoints        -> endpoints bio_ecg12_arr + bio_ecg12_afib at @champion, AI Gateway
+#   05_serve_endpoints        -> endpoints <endpoint_prefix>_arr + _afib at @champion, AI Gateway
 #                                inference tables                                 standard serverless
 # The DAILY job (ecg12_afib_daily.job.yml) scores with the champion models; run this job first.
-# Model and endpoint names come from common/config.py; the catalog and schema from the bundle
-# variables (job parameters catalog_name / schema_name).
+# Model names come from common/config.py; the catalog, schema and endpoint prefix from the bundle
+# variables (job parameters catalog_name / schema_name / endpoint_prefix).
 resources:
   jobs:
     ecg12_afib_setup:
@@ -25,6 +25,9 @@ resources:
           default: ${var.catalog}
         - name: schema_name
           default: ${var.schema}
+        # Workspace-wide serving endpoint names <endpoint_prefix>_arr / _afib (05_serve_endpoints).
+        - name: endpoint_prefix
+          default: ${var.endpoint_prefix}
 
       # Serverless GPU AI v5 environment (A10, torch, CUDA) for the PyTorch training and gate tasks.
       environments:

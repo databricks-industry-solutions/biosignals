@@ -17,6 +17,7 @@ settings to change when adapting it.
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 # --- Unity Catalog (UC) location ----------------------------------------------------------
 # Every table, model and inference table of this demo lives in <catalog>.<schema>. There is no
@@ -29,15 +30,23 @@ SCHEMA = "biosignals"
 # (-1, N_LEADS, 2500). Change it only together with a retrain of both models.
 N_LEADS = 12
 
-# --- Models (UC registered models) and their serving endpoints ----------------------------
-# Each endpoint has the same name as the model it serves. Endpoint names are workspace-wide, so
-# one workspace holds one deployment of this project; for a second copy, change these names.
+# --- Models (UC registered models) ---------------------------------------------------------
+# Fixed names: they live in <catalog>.<schema>, so each deployment's models are its own.
 ARR_MODEL_NAME = "bio_ecg12_arr"    # triage: abnormal rhythm -> arr_prob, arr_flag
 AFIB_MODEL_NAME = "bio_ecg12_afib"  # classify (flagged only): [p_not_afib, p_afib]
-ARR_ENDPOINT = ARR_MODEL_NAME
-AFIB_ENDPOINT = AFIB_MODEL_NAME
 # Their AI Gateway inference tables (enabled by 05_, read by the dashboard's live section) are
-# payload_table_name(endpoint) below: bio_ecg12_arr_payload and bio_ecg12_afib_payload.
+# payload_table_name(model) below: bio_ecg12_arr_payload and bio_ecg12_afib_payload, also in
+# <catalog>.<schema> and also fixed (the dashboard names them as bare tables).
+
+# --- Serving endpoints --------------------------------------------------------------------
+# Endpoint names are workspace-wide, unlike the models and tables, so they are configurable:
+# endpoint_names(prefix) gives <prefix>_arr and <prefix>_afib, where prefix is the bundle's
+# `endpoint_prefix` variable (SETUP job parameter, app environment), default ENDPOINT_PREFIX. Each
+# deployment in a workspace needs its own prefix; 05_serve_endpoints refuses to update an existing
+# endpoint that serves another deployment's model. With the default prefix the endpoint names
+# equal the model names.
+ENDPOINT_PREFIX = "bio_ecg12"
+_ENDPOINT_PREFIX_PATTERN = re.compile(r"[A-Za-z0-9_-]+")   # endpoint names: alphanumerics, '-', '_'
 # Model-version aliases, lowercase because Unity Catalog stores aliases lowercase.
 # 02_/03_ register every new version as CHALLENGER; only 04_validate_and_promote moves
 # CHAMPION, and only when the challenger passes VALIDATION_THRESHOLDS. Serving (05_) and batch
@@ -180,16 +189,27 @@ def daily_table(prefix: str, run_date: dt.date, catalog: str, schema: str = SCHE
     return uc_name(f"{prefix}{date_tag(run_date)}", catalog, schema)
 
 
-def payload_table_name(endpoint: str) -> str:
-    """Table name of the AI Gateway inference table that ``05_serve_endpoints`` enables for
-    ``endpoint``: AI Gateway names it ``<table_name_prefix>_payload`` and 05_ passes the endpoint
-    name as the prefix, so ``payload_table_name(ARR_ENDPOINT)`` is ``bio_ecg12_arr_payload``."""
-    return f"{endpoint}_payload"
+def endpoint_names(prefix: str | None = None) -> tuple[str, str]:
+    """This deployment's (triage, classify) serving endpoint names, ``<prefix>_arr`` and
+    ``<prefix>_afib``; an empty prefix means ``ENDPOINT_PREFIX``."""
+    prefix = (prefix or "").strip() or ENDPOINT_PREFIX
+    if not _ENDPOINT_PREFIX_PATTERN.fullmatch(prefix):
+        raise ValueError(f"endpoint_prefix={prefix!r}: an endpoint name can consist of alphanumeric "
+                         "characters, dashes and underscores only")
+    return f"{prefix}_arr", f"{prefix}_afib"
 
 
-def payload_table(endpoint: str, catalog: str, schema: str = SCHEMA) -> str:
-    """Three-level name of ``payload_table_name(endpoint)``."""
-    return uc_name(payload_table_name(endpoint), catalog, schema)
+def payload_table_name(model: str) -> str:
+    """Table name of the AI Gateway inference table that ``05_serve_endpoints`` enables for the
+    endpoint serving ``model``: AI Gateway names it ``<table_name_prefix>_payload`` and 05_ passes
+    the model name as the prefix (not the endpoint name, which varies per deployment), so
+    ``payload_table_name(ARR_MODEL_NAME)`` is ``bio_ecg12_arr_payload``."""
+    return f"{model}_payload"
+
+
+def payload_table(model: str, catalog: str, schema: str = SCHEMA) -> str:
+    """Three-level name of ``payload_table_name(model)``."""
+    return uc_name(payload_table_name(model), catalog, schema)
 
 
 def ecg_columns(n_leads: int = N_LEADS) -> list[str]:

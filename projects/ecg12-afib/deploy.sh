@@ -39,6 +39,9 @@ Required:
 
 Options:
   --schema SCHEMA             Unity Catalog schema (default: biosignals)
+  --endpoint-prefix PREFIX    serving endpoints PREFIX_arr and PREFIX_afib (default: bio_ecg12);
+                              endpoint names are workspace-wide, so use a value no other
+                              deployment in the workspace uses
   --app-name NAME             app name (default: ecg12-demo; app names are workspace-wide)
   --viewer-group GROUP        group that may view the dashboard and use the app (default: users)
   --run-daily                 also run the DAILY job once after SETUP
@@ -48,7 +51,7 @@ Options:
 USAGE
 }
 
-PROFILE="" CATALOG="" WAREHOUSE_ID="" SCHEMA="" APP_NAME="" VIEWER_GROUP=""
+PROFILE="" CATALOG="" WAREHOUSE_ID="" SCHEMA="" ENDPOINT_PREFIX="" APP_NAME="" VIEWER_GROUP=""
 RUN_DAILY=0 SKIP_ALLOWLIST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOG="${2:-}"; shift 2 ;;
     --warehouse-id) WAREHOUSE_ID="${2:-}"; shift 2 ;;
     --schema) SCHEMA="${2:-}"; shift 2 ;;
+    --endpoint-prefix) ENDPOINT_PREFIX="${2:-}"; shift 2 ;;
     --app-name) APP_NAME="${2:-}"; shift 2 ;;
     --viewer-group) VIEWER_GROUP="${2:-}"; shift 2 ;;
     --run-daily) RUN_DAILY=1; shift ;;
@@ -83,6 +87,7 @@ fi
 # Every bundle command gets the same target, profile and variables.
 BUNDLE=(-t full -p "$PROFILE" --var "catalog=$CATALOG" --var "warehouse_id=$WAREHOUSE_ID")
 [[ -z "$SCHEMA" ]] || BUNDLE+=(--var "schema=$SCHEMA")
+[[ -z "$ENDPOINT_PREFIX" ]] || BUNDLE+=(--var "endpoint_prefix=$ENDPOINT_PREFIX")
 [[ -z "$APP_NAME" ]] || BUNDLE+=(--var "app_name=$APP_NAME")
 [[ -z "$VIEWER_GROUP" ]] || BUNDLE+=(--var "viewer_group=$VIEWER_GROUP")
 APP_NAME="${APP_NAME:-ecg12-demo}"
@@ -101,12 +106,17 @@ python3 - "$cli_version" <<'PY' || fail "need Databricks CLI >= 0.281.0, found $
 import sys
 sys.exit(0 if tuple(map(int, sys.argv[1].split("."))) >= (0, 281, 0) else 1)
 PY
+# Endpoint names from the single source of truth, common/config.py (it imports only the standard
+# library): <prefix>_arr / <prefix>_afib, empty prefix = the bundle's default. This also rejects a
+# prefix an endpoint name cannot hold, before anything is built or deployed.
+endpoints=$(python3 -c 'import sys; sys.path.insert(0, "."); from common import config
+print(*config.endpoint_names(sys.argv[1]))' "$ENDPOINT_PREFIX" 2>&1) \
+  || fail "invalid --endpoint-prefix: ${endpoints##*: }"
+read -r ARR_ENDPOINT AFIB_ENDPOINT <<<"$endpoints"
+echo "serving endpoints: $ARR_ENDPOINT, $AFIB_ENDPOINT (workspace-wide names; the SETUP job stops if another deployment owns them)"
 me=$(databricks current-user me -p "$PROFILE" -o json | jq -r '.userName') \
   || fail "profile '$PROFILE' does not authenticate: run 'databricks auth login -p $PROFILE'."
 echo "apx 0.3.8, uv $(uv --version | cut -d ' ' -f 2), Databricks CLI $cli_version; deploying as $me"
-# Endpoint names come from the single source of truth (common/config.py imports only datetime).
-read -r ARR_ENDPOINT AFIB_ENDPOINT < <(python3 -c \
-  'import sys; sys.path.insert(0, "."); from common import config; print(config.ARR_ENDPOINT, config.AFIB_ENDPOINT)')
 
 # ---------------------------------------------------------------------------------------------
 step "2/8 build the app from the lockfiles"

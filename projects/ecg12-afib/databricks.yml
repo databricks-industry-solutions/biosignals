@@ -29,6 +29,13 @@ variables:
     default: biosignals
   warehouse_id:
     description: REQUIRED. ID of the SQL warehouse the AI/BI dashboard runs its queries on.
+  endpoint_prefix:
+    description: >-
+      Prefix of the two Model Serving endpoints, <endpoint_prefix>_arr and <endpoint_prefix>_afib
+      (letters, digits, '_' and '-'). Endpoint names are workspace-wide: use a value no other
+      deployment in your workspace uses. The SETUP job stops rather than update an existing endpoint
+      that serves another deployment's model.
+    default: bio_ecg12
   app_name:
     description: >-
       Name of the Databricks App (full target): lowercase letters, digits and hyphens, at most 30
@@ -85,6 +92,8 @@ targets:
                 value: ${var.catalog}
               - name: ECG_DEMO_REACT_UC_SCHEMA
                 value: ${var.schema}
+              - name: ECG_DEMO_REACT_ENDPOINT_PREFIX
+                value: ${var.endpoint_prefix}
               - name: ECG_DEMO_REACT_DASHBOARD_ID
                 value: ${resources.dashboards.ecg12_afib_dashboard.id}
               - name: ECG_DEMO_REACT_DAILY_JOB_ID

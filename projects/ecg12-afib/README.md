@@ -8,9 +8,10 @@ full model cycle: **generate training data → train → validate on a hold-out 
 serve → score daily → monitor**. The same Unity Catalog (UC) models run two ways:
 
 - **Live:** the app generates a 12-lead ECG plus a synthetic patient record and sends all 12
-  leads to two Model Serving endpoints, `bio_ecg12_arr` (triage), then `bio_ecg12_afib` (classify).
-  Each endpoint has the same name as the model it serves, and each call is logged to the
-  endpoint's AI Gateway inference table.
+  leads to two Model Serving endpoints, `<endpoint_prefix>_arr` (triage, serving the model
+  `bio_ecg12_arr`), then `<endpoint_prefix>_afib` (classify, serving `bio_ecg12_afib`). The prefix is
+  the bundle variable `endpoint_prefix` (default `bio_ecg12`, so by default each endpoint has the
+  same name as its model), and each call is logged to the endpoint's AI Gateway inference table.
 - **Batch:** a daily Lakeflow job loads the same champion models from UC and scores a synthetic
   batch on the job's driver into Delta tables (it does not call the endpoints).
 
@@ -49,7 +50,7 @@ endpoints, tables, thresholds) lives in [`common/config.py`](common/config.py).
 | `02_train_arr_model` | SETUP → `train_arr_model` (after 01) | MLflow run (incl. the layer table); new version of `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) |
 | `03_train_afib_model` | SETUP → `train_afib_model` (after 01, parallel with 02) | MLflow run (incl. the layer table); new version of `bio_ecg12_afib` → `@challenger` | serverless GPU (A10, AI v5) |
 | `04_validate_and_promote` | SETUP → `validate_and_promote` (after 02 + 03) | gate run with hold-out metrics + evaluation artifacts; both pass → `@champion` moves to the challengers, else the task fails | serverless GPU (A10, AI v5) |
-| `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `bio_ecg12_arr`, `bio_ecg12_afib` at `@champion` + inference tables `<endpoint>_payload` | standard serverless |
+| `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `<endpoint_prefix>_arr`, `<endpoint_prefix>_afib` at `@champion` (stops if one already serves another deployment's model) + inference tables `<model>_payload` | standard serverless |
 | `06_generate_batch_data` | DAILY → `simulate_incoming_batch` | `batch_data_12l_<YYYYMMDD>`: simulated incoming data, not real ingestion (acquisition times spread over the clinic day) + sample plot | standard serverless |
 | `07_arr_triage` | DAILY → `arr_triage` (after 06) | `arr_triaged_12l_<YYYYMMDD>` and that date's rows of `arr_triage_history_12l` (scored on the driver) | standard serverless, ML v5 |
 | `08_afib_classify` | DAILY → `afib_classify` (after 07) | that date's rows of `dailyOrweekly_arr_afib_inference_12l` (scored on the driver) | standard serverless, ML v5 |
@@ -134,8 +135,9 @@ synthetic data, not skill on a hard problem, and every figure says so in its cap
   (`scoring.score_driver_side`, as the gate does), recording the version in `arr_model_info` /
   `afib_model_info`. The endpoints are not called. Results: `arr_triaged_12l_<date>`,
   `arr_triage_history_12l`, `dailyOrweekly_arr_afib_inference_12l`.
-- **Live** (the app): each *Triage → Classify* sends one ECG to `bio_ecg12_arr` and, when flagged,
-  to `bio_ecg12_afib`; AI Gateway logs every request/response to `bio_ecg12_arr_payload` /
+- **Live** (the app): each *Triage → Classify* sends one ECG to the triage endpoint
+  (`<endpoint_prefix>_arr`) and, when flagged, to the classify endpoint (`<endpoint_prefix>_afib`);
+  AI Gateway logs every request/response to `bio_ecg12_arr_payload` /
   `bio_ecg12_afib_payload`. One 12-lead ECG is ~650 KB of JSON, inside the inference table's 1 MiB
   logging limit; a request above 1 MiB is served but logged with `MAX_REQUEST_SIZE_EXCEEDED` and a
   null payload, so `05_`'s smoke test and the app's warm-up pings also send one ECG per request.
@@ -228,13 +230,19 @@ export `BUNDLE_VAR_<name>`); `bundle validate` refuses to run without the requir
 | `catalog` | **yes** | — | Unity Catalog catalog of every table, model and inference table (jobs: `catalog_name`; dashboard: `dataset_catalog`; app: `ECG_DEMO_REACT_CATALOG`) |
 | `warehouse_id` | **yes** | — | SQL warehouse the dashboard runs on |
 | `schema` | no | `biosignals` | Unity Catalog schema (jobs: `schema_name`; dashboard: `dataset_schema`; app: `ECG_DEMO_REACT_UC_SCHEMA`); `01_` creates it if needed |
+| `endpoint_prefix` | no | `bio_ecg12` | Prefix of the two serving endpoints, `<endpoint_prefix>_arr` and `<endpoint_prefix>_afib` (letters, digits, `_`, `-`; SETUP job: `endpoint_prefix`; app: `ECG_DEMO_REACT_ENDPOINT_PREFIX`). Endpoint names are workspace-wide: use a value no other deployment in your workspace uses |
 | `app_name` | no | `ecg12-demo` | Name of the Databricks App (`full` target). Lowercase letters, digits and hyphens, at most 30 characters. Override it if that name is already taken in your workspace (app names are workspace-wide) |
 | `viewer_group` | no | `users` | Group granted `CAN_READ` on the dashboard and `CAN_USE` on the app |
 
 The workspace itself comes from your Databricks CLI profile (`-p <profile>`); no host or profile
-is committed. Model and endpoint names (`bio_ecg12_arr`, `bio_ecg12_afib`) are set in
-`common/config.py`. Endpoint names are workspace-wide and `05_` updates an existing endpoint of the
-same name, so one workspace holds one deployment of this project unless you change those names.
+is committed. The model names (`bio_ecg12_arr`, `bio_ecg12_afib`) and their inference tables
+(`bio_ecg12_arr_payload`, `bio_ecg12_afib_payload`) are fixed in `common/config.py`: they live in
+your catalog and schema, so they are this deployment's own. The serving endpoints are the one
+workspace-wide name, so they come from `endpoint_prefix`. **`05_` never takes over another
+deployment's endpoint:** before updating an existing endpoint of the same name it checks what the
+endpoint serves, and if that is anything but this deployment's `<catalog>.<schema>.<model>` the
+SETUP job stops with "Serving endpoint … already exists and serves …; set the bundle variable
+endpoint_prefix to a unique value", having changed neither endpoint.
 
 ## Deploy
 
@@ -302,7 +310,8 @@ cd projects/ecg12-afib
 8. adds the app's domain to the dashboard-embedding allowlist (needs a workspace admin; fails with
    the domain to add, or `--skip-embed-allowlist` skips it and prints that domain).
 
-Other options: `--schema`, `--app-name`, `--viewer-group` (the bundle variables above). Re-running
+Other options: `--schema`, `--endpoint-prefix`, `--app-name`, `--viewer-group` (the bundle
+variables above). Re-running
 is safe: every step updates in place, and the SETUP job retrains and re-gates both models.
 
 The notebooks also run one at a time from a Git folder (they find `common/` one folder up); type
@@ -326,11 +335,17 @@ databricks bundle destroy -t <no_app|full> -p <profile> --var catalog=<catalog> 
 ```
 
 This removes what the bundle created: the jobs, the dashboard and (`full`) the app. It does not
-remove what the jobs created; delete those yourself:
+remove what the jobs created; delete those yourself. Delete only this deployment's endpoints, by
+the names your `endpoint_prefix` gives (`<endpoint_prefix>_arr`, `<endpoint_prefix>_afib`), and
+first check that each one serves your own `<catalog>.<schema>` models (endpoint names are
+workspace-wide, so another deployment's endpoint can have a similar name):
 
 ```bash
-databricks serving-endpoints delete bio_ecg12_arr -p <profile>
-databricks serving-endpoints delete bio_ecg12_afib -p <profile>
+for e in <endpoint_prefix>_arr <endpoint_prefix>_afib; do
+  databricks serving-endpoints get "$e" -p <profile> -o json | jq -r '.config.served_entities[].entity_name'
+done                     # expect <catalog>.<schema>.bio_ecg12_arr and <catalog>.<schema>.bio_ecg12_afib
+databricks serving-endpoints delete <endpoint_prefix>_arr -p <profile>
+databricks serving-endpoints delete <endpoint_prefix>_afib -p <profile>
 databricks registered-models delete <catalog>.<schema>.bio_ecg12_arr -p <profile>
 databricks registered-models delete <catalog>.<schema>.bio_ecg12_afib -p <profile>
 ```

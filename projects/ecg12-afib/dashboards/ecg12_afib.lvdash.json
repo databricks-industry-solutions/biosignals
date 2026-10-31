@@ -1314,7 +1314,7 @@
             "name": "lineage-note",
             "multilineTextboxSpec": {
               "lines": [
-                "**One governed platform.** Batch lineage: `batch_data_12l_<date>` → `arr_triaged_12l_<date>` (+ `arr_triage_history_12l`) → `dailyorweekly_arr_afib_inference_12l`. Live: app → endpoints `bio_ecg12_arr` / `bio_ecg12_afib` → `bio_ecg12_arr_payload` / `bio_ecg12_afib_payload`. Both paths use the same `@champion` model versions, promoted by the SETUP job's validation gate. Cheap triage screens every ECG; the costlier AFib model runs only on the flagged."
+                "**One governed platform.** Batch lineage: `batch_data_12l_<date>` → `arr_triaged_12l_<date>` (+ `arr_triage_history_12l`) → `dailyorweekly_arr_afib_inference_12l`. Live: app → the triage and classify serving endpoints → `bio_ecg12_arr_payload` / `bio_ecg12_afib_payload`. Both paths use the same `@champion` model versions, promoted by the SETUP job's validation gate. Cheap triage screens every ECG; the costlier AFib model runs only on the flagged."
               ]
             }
           },

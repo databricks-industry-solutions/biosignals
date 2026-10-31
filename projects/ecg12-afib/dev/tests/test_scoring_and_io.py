@@ -26,9 +26,16 @@ def test_names_and_run_date():
     for empty in ("", "  ", None):
         with pytest.raises(ValueError, match="catalog_name is empty"):
             config.uc_location(empty, "s")
-    # Each endpoint is named after its model.
+    # Fixed model names (scoped by catalog.schema); workspace-wide endpoint names from a prefix,
+    # by default the model names.
     assert (config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME) == ("bio_ecg12_arr", "bio_ecg12_afib")
-    assert (config.ARR_ENDPOINT, config.AFIB_ENDPOINT) == (config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME)
+    assert not {"ARR_ENDPOINT", "AFIB_ENDPOINT"} & set(vars(config))         # no fixed endpoint name
+    assert config.endpoint_names() == config.endpoint_names("") == config.endpoint_names(None) == (
+        config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME)
+    assert config.endpoint_names(" acme-ecg_1 ") == ("acme-ecg_1_arr", "acme-ecg_1_afib")
+    for bad in ("a b", "a.b", "a/b", "ä"):
+        with pytest.raises(ValueError, match="endpoint_prefix"):
+            config.endpoint_names(bad)
     # The accumulating tables, one slice per batch_date.
     assert config.INFERENCE_TABLE == "dailyOrweekly_arr_afib_inference_12l"
     assert config.TRIAGE_HISTORY_TABLE == "arr_triage_history_12l"
@@ -40,9 +47,10 @@ def test_names_and_run_date():
     with pytest.raises(ValueError, match="run_date"):
         config.resolve_run_date("29-10-2026")
     assert config.daily_table(config.BATCH_TABLE_PREFIX, d, "c") == f"c.{config.SCHEMA}.batch_data_12l_20261029"
-    assert config.payload_table_name(config.ARR_ENDPOINT) == "bio_ecg12_arr_payload"
-    assert config.payload_table(config.ARR_ENDPOINT, "c", "s") == "c.s.bio_ecg12_arr_payload"
-    assert config.payload_table(config.AFIB_ENDPOINT, "c", "s") == "c.s.bio_ecg12_afib_payload"
+    # Payload tables are named by model, whatever the endpoint prefix.
+    assert config.payload_table_name(config.ARR_MODEL_NAME) == "bio_ecg12_arr_payload"
+    assert config.payload_table(config.ARR_MODEL_NAME, "c", "s") == "c.s.bio_ecg12_arr_payload"
+    assert config.payload_table(config.AFIB_MODEL_NAME, "c", "s") == "c.s.bio_ecg12_afib_payload"
     assert config.ecg_columns() == [f"ecg{i}" for i in range(1, 13)]
     # The app's live calls: the bound on one endpoint call, the keep-alive interval, the ping tag.
     assert (config.SERVING_TIMEOUT_S, config.WARMUP_INTERVAL_S, config.WARMUP_REQUEST_ID) == (30, 600, "app-warmup")

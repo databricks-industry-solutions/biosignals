@@ -56,8 +56,8 @@ args = parser.parse_args()
 # Bare table names: the bundle's dataset_catalog / dataset_schema supply catalog and schema.
 TRI = config.TRIAGE_HISTORY_TABLE                                    # arr_triage_history_12l
 INF = config.INFERENCE_TABLE                                         # dailyOrweekly_arr_afib_inference_12l
-ARR_PAY = config.payload_table_name(config.ARR_ENDPOINT)             # bio_ecg12_arr_payload
-AFIB_PAY = config.payload_table_name(config.AFIB_ENDPOINT)           # bio_ecg12_afib_payload
+ARR_PAY = config.payload_table_name(config.ARR_MODEL_NAME)           # bio_ecg12_arr_payload
+AFIB_PAY = config.payload_table_name(config.AFIB_MODEL_NAME)         # bio_ecg12_afib_payload
 
 DAY = config.BATCH_DATE_COL
 LATEST_DAY = f"{DAY} = (SELECT max({DAY}) FROM {TRI})"               # single-day tiles: the latest batch
@@ -69,8 +69,9 @@ IS_WARMUP = f"client_request_id = '{config.WARMUP_REQUEST_ID}'"
 RHYTHM = "CASE rhythm_label WHEN 0 THEN 'NSR' WHEN 1 THEN 'AFib' WHEN 2 THEN 'Other' END"
 AGE_BAND = ("CASE WHEN age_years < 50 THEN '40-49' WHEN age_years < 60 THEN '50-59' "
             "WHEN age_years < 70 THEN '60-69' WHEN age_years < 80 THEN '70-79' ELSE '80-90' END")
-ARR_LABEL = f"{config.ARR_ENDPOINT} (triage)"
-AFIB_LABEL = f"{config.AFIB_ENDPOINT} (classify)"
+# Labelled by model: the endpoint names vary per deployment (endpoint_prefix), the models do not.
+ARR_LABEL = f"{config.ARR_MODEL_NAME} (triage)"
+AFIB_LABEL = f"{config.AFIB_MODEL_NAME} (classify)"
 # Response JSON of each endpoint: ARR {"predictions": [{"arr_prob": p, "arr_flag": f}, ...]},
 # AFib {"predictions": [[p_not_afib, p_afib], ...]}; one entry per ECG.
 ARR_RESPONSE = "'predictions ARRAY<STRUCT<arr_prob: DOUBLE, arr_flag: DOUBLE>>'"
@@ -335,8 +336,8 @@ LINEAGE_Y = max(item["position"]["y"] + item["position"]["height"] for item in l
 layout += [
     text("lineage-note", ["**One governed platform.** Batch lineage: "
                           f"`{config.BATCH_TABLE_PREFIX}<date>` → `{config.TRIAGED_TABLE_PREFIX}<date>` "
-                          f"(+ `{TRI}`) → `{INF.lower()}`. Live: app → endpoints `{config.ARR_ENDPOINT}` / "
-                          f"`{config.AFIB_ENDPOINT}` → `{ARR_PAY}` / `{AFIB_PAY}`. Both paths use the same "
+                          f"(+ `{TRI}`) → `{INF.lower()}`. Live: app → the triage and classify serving "
+                          f"endpoints → `{ARR_PAY}` / `{AFIB_PAY}`. Both paths use the same "
                           f"`@{config.CHAMPION_ALIAS}` "
                           "model versions, promoted by the SETUP job's validation gate. Cheap triage screens every "
                           "ECG; the costlier AFib model runs only on the flagged."], 0, LINEAGE_Y, 12, 2),

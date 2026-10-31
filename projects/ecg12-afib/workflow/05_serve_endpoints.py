@@ -9,15 +9,21 @@
 # MAGIC
 # MAGIC | Endpoint | Serves | Trained by | Promoted by |
 # MAGIC |---|---|---|---|
-# MAGIC | `bio_ecg12_arr` (triage) | `bio_ecg12_arr@champion`, pinned to its version | `02_` | `04_` |
-# MAGIC | `bio_ecg12_afib` (classify) | `bio_ecg12_afib@champion`, pinned to its version | `03_` | `04_` |
+# MAGIC | `<endpoint_prefix>_arr` (triage) | `bio_ecg12_arr@champion`, pinned to its version | `02_` | `04_` |
+# MAGIC | `<endpoint_prefix>_afib` (classify) | `bio_ecg12_afib@champion`, pinned to its version | `03_` | `04_` |
 # MAGIC
-# MAGIC Each endpoint has the same name as its model (`common/config.py`). Endpoint names are
-# MAGIC workspace-wide: the first run creates both endpoints, and a re-run after a retrain + promotion
-# MAGIC moves each one to the new champion version (an existing endpoint of the same name is updated, so
-# MAGIC one workspace holds one deployment of this project unless the names are changed). Inference
-# MAGIC tables are `<endpoint>_payload` in the same schema (`bio_ecg12_arr_payload`,
-# MAGIC `bio_ecg12_afib_payload`, read by the dashboard's live-serving section).
+# MAGIC **Endpoint names are workspace-wide**, unlike the models and tables (which live in this
+# MAGIC deployment's catalog.schema), so they come from the `endpoint_prefix` parameter (the bundle
+# MAGIC variable of the same name, default `bio_ecg12`; `config.endpoint_names`). The first run creates
+# MAGIC both endpoints, and a re-run after a retrain + promotion moves each one to the new champion
+# MAGIC version. **An existing endpoint is updated only if it already serves this deployment's model**
+# MAGIC (`<catalog>.<schema>.<model>`): one that serves anything else belongs to another deployment, and
+# MAGIC the task stops before changing either endpoint, asking for a unique `endpoint_prefix`.
+# MAGIC Inference tables are `<model>_payload` in the same schema (`bio_ecg12_arr_payload`,
+# MAGIC `bio_ecg12_afib_payload`, read by the dashboard's live-serving section): AI Gateway's table
+# MAGIC prefix is the model name, so the table names do not depend on the endpoint names.
+# MAGIC
+# MAGIC Parameters: `catalog_name` (required), `schema_name`, `endpoint_prefix`.
 
 # COMMAND ----------
 
@@ -59,12 +65,14 @@ from common.ecg_signal_gen import generate_ecg_batch
 # DBTITLE 1,Parameters
 dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
+dbutils.widgets.text("endpoint_prefix", config.ENDPOINT_PREFIX, label="endpoint_prefix")
 catalog, schema = config.uc_location(dbutils.widgets.get("catalog_name"), dbutils.widgets.get("schema_name"))
+arr_endpoint, afib_endpoint = config.endpoint_names(dbutils.widgets.get("endpoint_prefix"))
 
 # (model, endpoint) pairs, triage first.
 SERVED = (
-    (config.ARR_MODEL_NAME, config.ARR_ENDPOINT),
-    (config.AFIB_MODEL_NAME, config.AFIB_ENDPOINT),
+    (config.ARR_MODEL_NAME, arr_endpoint),
+    (config.AFIB_MODEL_NAME, afib_endpoint),
 )
 print(f"{catalog}.{schema}: {SERVED}")
 
@@ -99,7 +107,18 @@ def wait_for_endpoint_ready(name, timeout=2400, poll=30):
     raise TimeoutError(f"'{name}' not ready after {timeout}s")
 
 
-def deploy(model_name, endpoint_name):
+def served_models(endpoint):
+    """UC model full names an existing endpoint serves, in its current and pending config."""
+    names = set()
+    for endpoint_config in (endpoint.config, endpoint.pending_config):
+        if endpoint_config is None:
+            continue
+        names |= {e.entity_name for e in (endpoint_config.served_entities or []) if e.entity_name}
+        names |= {m.model_name for m in (endpoint_config.served_models or []) if m.model_name}
+    return names
+
+
+def deploy(model_name, endpoint_name, existing):
     full = config.uc_name(model_name, catalog, schema)
     ver = scoring.resolve_alias(mc, full, config.CHAMPION_ALIAS).version
     served = f"{endpoint_name}-{ver}"
@@ -110,7 +129,6 @@ def deploy(model_name, endpoint_name):
         }],
         "traffic_config": {"routes": [{"served_model_name": served, "traffic_percentage": 100}]},
     }
-    existing = [e["name"] for e in deploy_client.list_endpoints()]
     if endpoint_name in existing:
         wait_for_endpoint_ready(endpoint_name)
         print(f"updating {endpoint_name} -> {full} v{ver}")
@@ -122,24 +140,42 @@ def deploy(model_name, endpoint_name):
 
 # COMMAND ----------
 
+# DBTITLE 1,Refuse an existing endpoint that serves another deployment's model (before changing either)
+existing = {e["name"] for e in deploy_client.list_endpoints()}
+for model_name, endpoint_name in SERVED:
+    if endpoint_name not in existing:
+        continue
+    full = config.uc_name(model_name, catalog, schema)
+    served = served_models(w.serving_endpoints.get(name=endpoint_name))
+    if served != {full}:
+        raise RuntimeError(
+            f"Serving endpoint {endpoint_name} already exists and serves {sorted(served) or 'no model'}, not {full}. "
+            "Endpoint names are workspace-wide and it belongs to another deployment, so it is left as it is. "
+            "Set the bundle variable endpoint_prefix to a unique value and run the SETUP job again.")
+    print(f"{endpoint_name}: exists and serves {full} (this deployment's model), will be updated")
+
+# COMMAND ----------
+
 # DBTITLE 1,Issue both deploys (they build in parallel)
 for model_name, endpoint_name in SERVED:
-    full, ver = deploy(model_name, endpoint_name)
+    full, ver = deploy(model_name, endpoint_name, existing)
     print(f"{endpoint_name}: {full} v{ver}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Wait for both ready + enable AI Gateway inference tables (<endpoint>_payload)
-for _, endpoint_name in SERVED:
+# DBTITLE 1,Wait for both ready + enable AI Gateway inference tables (<model>_payload)
+# The table prefix is the model name (config.payload_table_name), not the endpoint name: the
+# dashboard reads these tables by fixed bare names, whatever endpoint_prefix is.
+for model_name, endpoint_name in SERVED:
     wait_for_endpoint_ready(endpoint_name, timeout=3000)
     w.serving_endpoints.put_ai_gateway(
         name=endpoint_name,
         inference_table_config=AiGatewayInferenceTableConfig(
-            enabled=True, catalog_name=catalog, schema_name=schema, table_name_prefix=endpoint_name,
+            enabled=True, catalog_name=catalog, schema_name=schema, table_name_prefix=model_name,
         ),
     )
     print(f"AI Gateway inference table enabled for '{endpoint_name}' -> "
-          f"{config.payload_table(endpoint_name, catalog, schema)}")
+          f"{config.payload_table(model_name, catalog, schema)}")
 
 # COMMAND ----------
 

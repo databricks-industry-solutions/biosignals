@@ -41,7 +41,7 @@
 # MAGIC | `02_train_arr_model` | Train the triage model on `train` (+ `val` metrics), log to MLflow (incl. the layer table), register `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) | SETUP → `train_arr_model` (after 01) |
 # MAGIC | `03_train_afib_model` | Train the AFib classifier the same way → `bio_ecg12_afib` `@challenger` | serverless GPU (A10, AI v5) | SETUP → `train_afib_model` (after 01, parallel with 02) |
 # MAGIC | `04_validate_and_promote` | **Gate:** score both challengers on `holdout`, check the thresholds, log the evaluation artifacts; both pass → `@champion` moves to them, else the job stops | serverless GPU (A10, AI v5) | SETUP → `validate_and_promote` (after 02 + 03) |
-# MAGIC | `05_serve_endpoints` | Create / update endpoints `bio_ecg12_arr` + `bio_ecg12_afib` at the champion versions, AI Gateway inference tables, smoke query | standard serverless | SETUP → `serve_endpoints` (after 04) |
+# MAGIC | `05_serve_endpoints` | Create / update endpoints `<endpoint_prefix>_arr` + `<endpoint_prefix>_afib` at the champion versions (never one that serves another deployment's model), AI Gateway inference tables, smoke query | standard serverless | SETUP → `serve_endpoints` (after 04) |
 # MAGIC | `06_generate_batch_data` | One day's new synthetic 12-lead ECGs + synthetic patient records, acquisition times spread over the day → `batch_data_12l_<YYYYMMDD>` | standard serverless | DAILY → `simulate_incoming_batch` (simulated incoming data, not real ingestion) |
 # MAGIC | `07_arr_triage` | Score all 12 leads with `bio_ecg12_arr@champion` on the driver → `arr_prob`, `arr_flag` → `arr_triaged_12l_<YYYYMMDD>` + that date's rows of `arr_triage_history_12l` | standard serverless (ML v5) | DAILY → `arr_triage` (after 06) |
 # MAGIC | `08_afib_classify` | Score the flagged rows with `bio_ecg12_afib@champion` on the driver → that date's rows of `dailyOrweekly_arr_afib_inference_12l` | standard serverless (ML v5) | DAILY → `afib_classify` (after 07) |
@@ -74,7 +74,9 @@
 # MAGIC table and a README), and tags on each model version (training data version,
 # MAGIC `validation_status`, `gate_result`, `holdout_*`, `holdout_eval_artifacts`). `validation_status`
 # MAGIC is set by the gate only, to `valid` or `invalid`, so it also works where a Unity Catalog tag
-# MAGIC policy restricts that key to those two values. Each endpoint has the same name as its model.
+# MAGIC policy restricts that key to those two values. The endpoints are named
+# MAGIC `<endpoint_prefix>_arr` / `<endpoint_prefix>_afib` (bundle variable `endpoint_prefix`, default
+# MAGIC `bio_ecg12`): endpoint names are workspace-wide, unlike the models and tables in your schema.
 # MAGIC
 # MAGIC **Why the metrics sit near 1.0.** The synthetic rhythms are trivially separable by design: heart
 # MAGIC rate alone separates triage (the generator draws NSR at 60–100 bpm, AFib and Other at 100–160

@@ -10,7 +10,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..._metadata import app_name, app_slug
-from ..common.config import SCHEMA
+from ..common.config import ENDPOINT_PREFIX, SCHEMA, endpoint_names
 
 # --- Config ---
 
@@ -29,15 +29,17 @@ class AppConfig(BaseSettings):
         env_nested_delimiter="__",
     )
     app_name: str = Field(default=app_name)
-    # Where this deployment's tables and models live, which AI/BI dashboard the Batch tab embeds
-    # and which DAILY job the header's Lakeflow link opens. The bundle's `full` target sets them
-    # (databricks.yml, resources.apps.*.config.env) from its `catalog` / `schema` variables and the
-    # ids of the dashboard and job it deploys, as ECG_DEMO_REACT_CATALOG, ECG_DEMO_REACT_UC_SCHEMA,
+    # Where this deployment's tables and models live, which serving endpoints it calls, which
+    # AI/BI dashboard the Batch tab embeds and which DAILY job the header's Lakeflow link opens. The
+    # bundle's `full` target sets them (databricks.yml, resources.apps.*.config.env) from its
+    # `catalog` / `schema` / `endpoint_prefix` variables and the ids of the dashboard and job it
+    # deploys, as ECG_DEMO_REACT_CATALOG, ECG_DEMO_REACT_UC_SCHEMA, ECG_DEMO_REACT_ENDPOINT_PREFIX,
     # ECG_DEMO_REACT_DASHBOARD_ID and ECG_DEMO_REACT_DAILY_JOB_ID. The catalog has no usable
     # default, so the app fails at startup without it; no dashboard id = no embed; no job id = the
     # link opens the workspace's jobs list.
     catalog: str = Field(default="", validate_default=True)
     uc_schema: str = Field(default=SCHEMA)
+    endpoint_prefix: str = Field(default=ENDPOINT_PREFIX)
     dashboard_id: str | None = None
     daily_job_id: str | None = None
 
@@ -48,6 +50,17 @@ class AppConfig(BaseSettings):
             raise ValueError(f"{app_slug.upper()}_CATALOG is not set: the bundle's full target sets it "
                              "from the `catalog` variable (databricks.yml)")
         return value.strip()
+
+    @field_validator("endpoint_prefix")
+    @classmethod
+    def _endpoint_prefix_is_valid(cls, value: str) -> str:
+        endpoint_names(value)          # raises on characters an endpoint name cannot hold
+        return value.strip() or ENDPOINT_PREFIX
+
+    @property
+    def endpoints(self) -> tuple[str, str]:
+        """This deployment's (triage, classify) serving endpoint names."""
+        return endpoint_names(self.endpoint_prefix)
 
     @property
     def static_assets_path(self) -> Path:

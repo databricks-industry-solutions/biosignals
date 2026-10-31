@@ -66,7 +66,7 @@ def test_bundle_variables_have_no_workspace_defaults():
     bundle = _bundle()
     assert bundle["bundle"]["name"] == "biosignals-ecg12-afib"
     variables = bundle["variables"]
-    assert set(variables) == {"catalog", "schema", "warehouse_id", "app_name", "viewer_group"}
+    assert set(variables) == {"catalog", "schema", "warehouse_id", "endpoint_prefix", "app_name", "viewer_group"}
     for required in ("catalog", "warehouse_id"):
         assert not {"default", "lookup"} & set(variables[required]), required
         assert variables[required]["description"].startswith("REQUIRED."), required
@@ -76,6 +76,10 @@ def test_bundle_variables_have_no_workspace_defaults():
     assert APP_NAME_PATTERN.fullmatch(app_name) and len(app_name) <= APP_NAME_MAX
     assert "workspace-wide" in variables["app_name"]["description"]
     assert variables["viewer_group"]["default"] == "users"
+    # Workspace-wide endpoint names: one prefix, default = config's (the app and 05_ fall back to it).
+    assert variables["endpoint_prefix"]["default"] == config.ENDPOINT_PREFIX
+    assert "workspace-wide" in variables["endpoint_prefix"]["description"]
+    config.endpoint_names(variables["endpoint_prefix"]["default"])          # a valid prefix
     for name, target in bundle["targets"].items():
         assert target["mode"] == "development", name
         assert not {"host", "profile"} & set(target.get("workspace") or {}), name
@@ -107,13 +111,15 @@ def test_no_app_target_needs_no_local_build_and_full_adds_the_app():
     assert app["config"]["command"] == yaml.safe_load((DEMO_ROOT / "app" / "app.yml").read_text())["command"]
     env = {e["name"]: e["value"] for e in app["config"]["env"]}
     assert env == {"ECG_DEMO_REACT_CATALOG": "${var.catalog}", "ECG_DEMO_REACT_UC_SCHEMA": "${var.schema}",
+                   "ECG_DEMO_REACT_ENDPOINT_PREFIX": "${var.endpoint_prefix}",
                    "ECG_DEMO_REACT_DASHBOARD_ID": "${resources.dashboards.ecg12_afib_dashboard.id}",
                    "ECG_DEMO_REACT_DAILY_JOB_ID": "${resources.jobs.ecg12_afib_daily.id}"}
     assert "ecg12_afib_daily" in _jobs()                                     # the job that id refers to
     assert app["permissions"] == [{"group_name": "${var.viewer_group}", "level": "CAN_USE"}]
     # Those env names are the backend's AppConfig fields (env prefix ECG_DEMO_REACT_).
     app_config = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend" / "core" / "_config.py").read_text()
-    for field in ("catalog: str", "uc_schema: str", "dashboard_id: str | None", "daily_job_id: str | None"):
+    for field in ("catalog: str", "uc_schema: str", "endpoint_prefix: str", "dashboard_id: str | None",
+                  "daily_job_id: str | None"):
         assert f"    {field}" in app_config, field
     pyproject = (DEMO_ROOT / "app" / "pyproject.toml").read_text()
     assert 'app-slug = "ecg_demo_react"' in pyproject                        # -> prefix ECG_DEMO_REACT_
@@ -146,8 +152,11 @@ def test_app_bounds_every_endpoint_call_and_tags_its_warmup_pings():
     for status in (429, 502, 503):
         assert f"_endpoint_error({status}," in router, status
     for field in ("daily_job_id=settings.daily_job_id", "serving_timeout_s=config.SERVING_TIMEOUT_S",
-                  "warmup_interval_s=config.WARMUP_INTERVAL_S"):
-        assert field in router, field
+                  "warmup_interval_s=config.WARMUP_INTERVAL_S", "arr_endpoint=settings.endpoints[0]",
+                  "afib_endpoint=settings.endpoints[1]", "arr_endpoint, afib_endpoint = settings.endpoints",
+                  "endpoints = list(settings.endpoints)"):
+        assert field in router, field                                       # endpoint names: endpoint_prefix
+    assert "return endpoint_names(self.endpoint_prefix)" in (backend / "core" / "_config.py").read_text()
     ui = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "ui" / "routes" / "index.tsx").read_text()
     assert "const UI_MARGIN_S = 10;" in ui and "2 * (cfg.serving_timeout_s + UI_MARGIN_S)" in ui
     for text in ("Cancel</Button>", "Retry</Button>", "New reading", "Reading…", "Each ECG is read in and scored live",
@@ -163,8 +172,12 @@ def test_deploy_script_is_valid_bash_and_reads_endpoint_names_from_config():
     script = (DEMO_ROOT / "deploy.sh").read_text()
     subprocess.run(["bash", "-n", str(DEMO_ROOT / "deploy.sh")], check=True)
     assert script.startswith("#!/usr/bin/env bash") and "set -euo pipefail" in script
-    assert "config.ARR_ENDPOINT, config.AFIB_ENDPOINT" in script
-    assert not {config.ARR_ENDPOINT, config.AFIB_ENDPOINT} & set(re.findall(r"\w+", script))
+    assert "config.endpoint_names(sys.argv[1])" in script and '"$ENDPOINT_PREFIX"' in script
+    assert '--var "endpoint_prefix=$ENDPOINT_PREFIX"' in script
+    assert not set(config.endpoint_names()) & set(re.findall(r"\w+", script))   # (the help text shows the default prefix)
+    # --skip-embed-allowlist makes no settings call: the skip branch comes before the first one.
+    step8 = script[script.index('step "8/8'):]
+    assert step8.index("SKIP_ALLOWLIST -eq 1") < step8.index("databricks settings")
     for step in ("bundle validate --strict", "bundle deploy", "bundle run ecg12_afib_setup",
                  "serving-endpoints update-permissions", "CAN_QUERY", "bundle run ecg12_afib_app",
                  "aibi-dashboard-embedding-approved-domains"):
@@ -216,6 +229,9 @@ def test_job_tasks_point_at_existing_notebooks_on_serverless():
         "aiv5": {"base_environment": "databricks_ai_v5"}}
     assert {e["environment_key"]: e["spec"] for e in daily["environments"]} == {
         "ml_v5": {"base_environment": "databricks_ml_v5"}}
+    # Only SETUP serves endpoints (05_), so only SETUP gets the endpoint prefix.
+    assert {p["name"]: p["default"] for p in setup["parameters"]}["endpoint_prefix"] == "${var.endpoint_prefix}"
+    assert "endpoint_prefix" not in {p["name"] for p in daily["parameters"]}
     params = {p["name"]: p["default"] for p in daily["parameters"]}
     assert params[config.RUN_DATE_PARAM] == "{{job.start_time.iso_date}}"
     assert daily["schedule"]["pause_status"] == "PAUSED"
@@ -248,9 +264,11 @@ def _yaml_scalars(node):
 
 def test_model_and_endpoint_names_come_only_from_config():
     """No code, job, bundle or app file names a model or endpoint: notebooks, dashboard builder,
-    deploy script and app read config.ARR_MODEL_NAME / AFIB_MODEL_NAME / *_ENDPOINT."""
-    names = {config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME, config.ARR_ENDPOINT, config.AFIB_ENDPOINT}
-    assert names == {"bio_ecg12_arr", "bio_ecg12_afib"}                       # each endpoint = its model
+    deploy script and app read config.ARR_MODEL_NAME / AFIB_MODEL_NAME and config.endpoint_names
+    of the endpoint_prefix parameter. The only literal prefix outside config is the bundle
+    variable's default."""
+    names = {config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME, config.ENDPOINT_PREFIX, *config.endpoint_names()}
+    assert names == {"bio_ecg12", "bio_ecg12_arr", "bio_ecg12_afib"}
     py_files = [p for p in DEMO_ROOT.rglob("*.py") if not SKIP_DIRS & set(p.relative_to(DEMO_ROOT).parts)]
     for path in py_files:
         for literal in _string_literals(path):
@@ -258,7 +276,10 @@ def test_model_and_endpoint_names_come_only_from_config():
                 continue                                                     # docstring prose
             assert not names & set(re.findall(r"\w+", literal)), f"{path.relative_to(DEMO_ROOT)}: {literal[:80]}"
     for path in [DEMO_ROOT / "databricks.yml", *sorted((DEMO_ROOT / "resources").glob("*.yml"))]:
-        for value in _yaml_scalars(yaml.safe_load(path.read_text())):
+        bundle = yaml.safe_load(path.read_text())
+        if path.name == "databricks.yml":
+            bundle["variables"]["endpoint_prefix"].pop("default")             # checked against config above
+        for value in _yaml_scalars(bundle):
             assert not names & set(re.findall(r"\w+", value)), path.name
     ui_sources = [p for p in (APP_COPY.parent.parent / "ui").rglob("*.ts*") if "node_modules" not in p.parts]
     assert ui_sources
@@ -325,7 +346,7 @@ def test_dashboard_has_separate_batch_and_live_sections_on_bare_tables():
     assert set(sql) == batch | live
     assert not any({"catalog", "schema"} & set(d) for d in dashboard["datasets"])   # the bundle sets them
     history, results = config.TRIAGE_HISTORY_TABLE, config.INFERENCE_TABLE
-    payloads = {config.payload_table_name(e) for e in (config.ARR_ENDPOINT, config.AFIB_ENDPOINT)}
+    payloads = {config.payload_table_name(m) for m in (config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME)}
     assert payloads == {"bio_ecg12_arr_payload", "bio_ecg12_afib_payload"}
     for name, query in sql.items():
         tables = set(re.findall(r"\b(?:FROM|JOIN)\s+([\w.`]+)", query))

@@ -19,7 +19,9 @@
 #   7. start the app: databricks bundle run ecg12_afib_app (deploys the built source with its
 #      environment, including the dashboard id)
 #   8. add the app's domain to the workspace's dashboard-embedding allowlist (workspace admin
-#      setting; done after step 7 because the app's URL exists once the app is deployed)
+#      setting; done after step 7 because the app's URL exists once the app is deployed). It reads
+#      the current list and writes it back with the domain added, keeping every entry already
+#      there. --skip-embed-allowlist makes no settings call at all and prints what an admin must add.
 #
 # Re-running is safe: every step updates in place (SETUP retrains and re-gates the models).
 # Remove everything with: databricks bundle destroy -t full -p <profile> --var ... (see README.md).
@@ -152,33 +154,47 @@ step "8/8 dashboard-embedding allowlist (workspace admin setting)"
 app_domain=${app_url#*://}
 app_domain=${app_domain%%/*}
 admin_help="A workspace admin must allow embedding on '$app_domain': Settings > Security > Embed dashboards (approved domains)."
-policy=$(databricks settings aibi-dashboard-embedding-access-policy get -p "$PROFILE" -o json \
-  | jq -r '.aibi_dashboard_embedding_access_policy.access_policy_type') \
-  || fail "cannot read the dashboard-embedding policy. $admin_help"
-case "$policy" in
-  ALLOW_ALL_DOMAINS)
-    echo "embedding is allowed on every domain; nothing to add" ;;
-  DENY_ALL_DOMAINS)
-    fail "dashboard embedding is disabled in this workspace (DENY_ALL_DOMAINS), so the app cannot show the dashboard. $admin_help" ;;
-  ALLOW_APPROVED_DOMAINS)
-    domains=$(databricks settings aibi-dashboard-embedding-approved-domains get -p "$PROFILE" -o json \
-      | jq -c '.aibi_dashboard_embedding_approved_domains.approved_domains // []')
-    if jq -e --arg d "$app_domain" 'index($d) != null' <<<"$domains" >/dev/null; then
-      echo "'$app_domain' is already an approved embedding domain"
-    elif [[ $SKIP_ALLOWLIST -eq 1 ]]; then
-      echo "SKIPPED (--skip-embed-allowlist). $admin_help"
-    else
-      body=$(jq -n --arg d "$app_domain" --argjson current "$domains" '{
-        allow_missing: true,
-        field_mask: "aibi_dashboard_embedding_approved_domains.approved_domains",
-        setting: {aibi_dashboard_embedding_approved_domains: {approved_domains: ($current + [$d])}}}')
-      databricks settings aibi-dashboard-embedding-approved-domains update -p "$PROFILE" --json "$body" >/dev/null \
-        || fail "could not add '$app_domain' to the approved embedding domains (needs a workspace admin; rerun with --skip-embed-allowlist to skip). $admin_help"
-      echo "added '$app_domain' to the approved embedding domains"
-    fi ;;
-  *)
-    fail "unexpected dashboard-embedding policy '$policy'. $admin_help" ;;
-esac
+if [[ $SKIP_ALLOWLIST -eq 1 ]]; then
+  # No settings API call at all: reading these settings needs a workspace admin too.
+  echo "SKIPPED (--skip-embed-allowlist). $admin_help"
+else
+  policy=$(databricks settings aibi-dashboard-embedding-access-policy get -p "$PROFILE" -o json \
+    | jq -r '.aibi_dashboard_embedding_access_policy.access_policy_type') \
+    || fail "cannot read the dashboard-embedding policy (needs a workspace admin; rerun with --skip-embed-allowlist to skip this step). $admin_help"
+  case "$policy" in
+    ALLOW_ALL_DOMAINS)
+      echo "embedding is allowed on every domain; nothing to add" ;;
+    DENY_ALL_DOMAINS)
+      fail "dashboard embedding is disabled in this workspace (DENY_ALL_DOMAINS), so the app cannot show the dashboard. $admin_help" ;;
+    ALLOW_APPROVED_DOMAINS)
+      # Read-modify-write: keep every approved domain already there and add this app's. The CLI's
+      # stderr is kept apart, so a warning on stderr cannot corrupt the JSON reply.
+      get_err=$(mktemp)
+      if ! current=$(databricks settings aibi-dashboard-embedding-approved-domains get -p "$PROFILE" -o json 2>"$get_err"); then
+        if grep -q -E 'RESOURCE_DOES_NOT_EXIST|NOT_FOUND' "$get_err"; then
+          current='{}'                                   # never set: no approved domains yet
+        else
+          fail "cannot read the approved embedding domains (needs a workspace admin; rerun with --skip-embed-allowlist to skip this step): $(cat "$get_err"). $admin_help"
+        fi
+      fi
+      rm -f "$get_err"
+      domains=$(jq -c '.aibi_dashboard_embedding_approved_domains.approved_domains // []' <<<"$current") \
+        || fail "unexpected reply when reading the approved embedding domains: $current"
+      if jq -e --arg d "$app_domain" 'index($d) != null' <<<"$domains" >/dev/null; then
+        echo "'$app_domain' is already an approved embedding domain"
+      else
+        body=$(jq -n --arg d "$app_domain" --argjson current "$domains" '{
+          allow_missing: true,
+          field_mask: "aibi_dashboard_embedding_approved_domains.approved_domains",
+          setting: {aibi_dashboard_embedding_approved_domains: {approved_domains: ($current + [$d])}}}')
+        databricks settings aibi-dashboard-embedding-approved-domains update -p "$PROFILE" --json "$body" >/dev/null \
+          || fail "could not add '$app_domain' to the approved embedding domains (needs a workspace admin; rerun with --skip-embed-allowlist to skip this step). $admin_help"
+        echo "added '$app_domain' to the $(jq length <<<"$domains") approved embedding domain(s) already there"
+      fi ;;
+    *)
+      fail "unexpected dashboard-embedding policy '$policy'. $admin_help" ;;
+  esac
+fi
 
 trap - ERR
 echo

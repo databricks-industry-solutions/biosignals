@@ -92,7 +92,8 @@ jobs:
               """(title, sanitized HTML) of one markdown file. Heading ids get the section id as prefix
               (unique on the page); links to another rendered file become in-page links (data-section /
               data-anchor, see showSection); every other relative link points at the file on GitHub, so
-              nothing breaks. Then clean() removes everything outside the allowlist (script, event
+              nothing breaks, and relative images point at the raw file on GitHub. Then clean() removes
+              everything outside the allowlist (script, event
               handlers, style, javascript: and other non-http(s)/mailto URLs, ...)."""
               section = md_sections[path]
               with open(path, 'r') as f:
@@ -113,6 +114,14 @@ jobs:
                           a['data-anchor'] = f"{md_sections[resolved]}--{anchor}"
                   else:
                       a['href'] = f"{repo_url}/blob/{ref}/{resolved}" + (f"#{anchor}" if anchor else "")
+              # Relative images (e.g. docs/images/*.png) -> the file itself at the built commit, resolved
+              # against this markdown file, so the https src passes the sanitizer; anything with a
+              # scheme is left to the sanitizer (only http(s) survives: no data:, no javascript:).
+              for img in soup.find_all('img', src=True):
+                  src = img['src'].strip()
+                  if src and not re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', src) and not src.startswith('//'):
+                      resolved = src.lstrip('/') if src.startswith('/') else posixpath.normpath(posixpath.join(base, src))
+                      img['src'] = f"{repo_url}/raw/{ref}/{resolved}"
               heading = soup.find('h1')
               title = ' '.join(heading.get_text().split()) if heading else os.path.basename(path)   # text only
               return title, clean(str(soup))

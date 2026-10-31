@@ -3,8 +3,8 @@
 #
 # Nothing here names a workspace: pass your own Databricks CLI profile (-p <profile>) and the
 # required variables on every command, e.g.
-#   databricks bundle validate --strict -p <profile> --var catalog=<catalog>
-# (or export BUNDLE_VAR_catalog=<catalog>). Validate needs app/.build: run
+#   databricks bundle validate --strict -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
+# (or export BUNDLE_VAR_catalog=<catalog> BUNDLE_VAR_warehouse_id=<id>). Validate needs app/.build: run
 # app/build_from_lockfiles.sh first; deploy runs that build itself.
 bundle:
   name: biosignals-ecg12-afib
@@ -20,6 +20,8 @@ variables:
   schema:
     description: Unity Catalog schema for the demo's tables, models and inference tables.
     default: biosignals
+  warehouse_id:
+    description: REQUIRED. ID of the SQL warehouse the AI/BI dashboard runs its queries on.
   app_name:
     description: >-
       Name of the Databricks App: lowercase letters, digits and hyphens, at most 30 characters.
@@ -52,11 +54,15 @@ resources:
       config:
         command: ["uvicorn", "ecg_demo_react.backend.app:app", "--workers", "2"]
         # Read by the backend's AppConfig (backend/core/_config.py, env prefix ECG_DEMO_REACT_).
+        # The dashboard id is resolved from this deployment's state when the app is deployed
+        # (`bundle run`), so pointing the app at the dashboard needs no rebuild.
         env:
           - name: ECG_DEMO_REACT_CATALOG
             value: ${var.catalog}
           - name: ECG_DEMO_REACT_UC_SCHEMA
             value: ${var.schema}
+          - name: ECG_DEMO_REACT_DASHBOARD_ID
+            value: ${resources.dashboards.ecg12_afib_dashboard.id}
 
 targets:
   dev:

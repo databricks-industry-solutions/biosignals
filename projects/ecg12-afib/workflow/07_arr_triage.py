@@ -58,8 +58,10 @@ catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name
                                                dbutils.widgets.get("schema_name"))
 read_table = config.daily_table(config.BATCH_TABLE_PREFIX, run_date, catalog_name, schema_name)
 write_table = config.daily_table(config.TRIAGED_TABLE_PREFIX, run_date, catalog_name, schema_name)
+history_table = config.uc_name(config.TRIAGE_HISTORY_TABLE, catalog_name, schema_name)
 arr_model_full = config.uc_name(dbutils.widgets.get("arr_model_name"), catalog_name, schema_name)
-print(f"run_date: {run_date}\nread : {read_table}\nwrite: {write_table}\nmodel: {arr_model_full}@{config.CHAMPION_ALIAS}")
+print(f"run_date: {run_date}\nread : {read_table}\nwrite: {write_table}, {history_table}\n"
+      f"model: {arr_model_full}@{config.CHAMPION_ALIAS}")
 
 # COMMAND ----------
 
@@ -95,6 +97,14 @@ triaged_SDF = scoring.score_driver_side(
 # DBTITLE 1,Write arr_triaged_12l_<date> (overwrite = re-run safe)
 uc_io.overwrite_table(spark, triaged_SDF, write_table)
 print(f"wrote {write_table}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Write this date's slice of arr_triage_history_12l without the ECG arrays (re-run safe)
+# Every day's triage results under one fixed name, for the dashboard (a per-date table name cannot
+# be a dashboard dataset).
+mode = uc_io.write_date_slice(spark, spark.table(write_table).drop(*ecg_cols), history_table, run_date)
+print(f"{mode}: {history_table} ({config.BATCH_DATE_COL} = {run_date})")
 
 # COMMAND ----------
 

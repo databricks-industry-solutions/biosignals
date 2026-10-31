@@ -113,8 +113,11 @@ VALIDATION_MIN_ROWS = 100           # fewer hold-out rows than this fails the ga
 # Per-date tables, overwritten when a date is re-run (the 12l suffix marks the 12-lead tables).
 BATCH_TABLE_PREFIX = "batch_data_12l_"       # 06_generate_batch_data -> batch_data_12l_<YYYYMMDD>
 TRIAGED_TABLE_PREFIX = "arr_triaged_12l_"    # 07_arr_triage          -> arr_triaged_12l_<YYYYMMDD>
-# Accumulating results table (08_afib_classify), read by the dashboard and the app; re-running a
-# date replaces only that date's rows (see uc_io.write_date_slice).
+# Accumulating tables, one slice per batch_date (re-running a date replaces only that date's rows,
+# see uc_io.write_date_slice). The dashboard reads these two under fixed names:
+# every screened ECG of every day with its triage call, without the ECG arrays (07_arr_triage) ...
+TRIAGE_HISTORY_TABLE = "arr_triage_history_12l"
+# ... and every day's flagged ECGs with the AFib call (08_afib_classify; the app links to it).
 INFERENCE_TABLE = "dailyOrweekly_arr_afib_inference_12l"
 BATCH_DATE_COL = "batch_date"
 ID_COL = "pseudo_patient_id"

@@ -3,10 +3,10 @@
 * ``overwrite_table``: tables rebuilt whole on every run (the training dataset
   ``training_data_12l`` and the per-date ``batch_data_12l_<date>``, ``arr_triaged_12l_<date>``)
   are replaced, schema included, so a re-run leaves exactly one copy.
-* ``write_date_slice``: the accumulating ``dailyOrweekly_arr_afib_inference_12l`` table gets
-  one date replaced atomically (Delta ``replaceWhere`` on ``batch_date``), so re-running a date
-  does not duplicate rows. An existing table without ``batch_date`` (such as the live 8-lead
-  demo's ``dailyOrweekly_arr_afib_inference``) is refused, never written to.
+* ``write_date_slice``: the accumulating tables ``arr_triage_history_12l`` and
+  ``dailyOrweekly_arr_afib_inference_12l`` get one date replaced atomically (Delta
+  ``replaceWhere`` on ``batch_date``), so re-running a date does not duplicate rows. An existing
+  table without ``batch_date`` was not written by this function and is refused, never written to.
 * ``table_version`` / ``read_table_version``: the training notebooks record the Delta version
   of the training dataset they read, and the validation gate reads the hold-out split at that
   same version, so a challenger is always judged on the data snapshot it was trained beside.

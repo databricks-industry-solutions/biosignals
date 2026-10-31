@@ -1,16 +1,26 @@
-"""Build the 12-lead ECG/AFib AI/BI dashboard request body: batch monitoring + live serving.
+"""Generate the 12-lead ECG/AFib AI/BI dashboard, ``ecg12_afib.lvdash.json``: batch monitoring +
+live serving.
+
+The bundle deploys that file as a dashboard resource (``resources/ecg12_afib.dashboard.yml``),
+with the catalog and schema set by the bundle variables (``dataset_catalog`` /
+``dataset_schema``): every query names bare tables, so the file is the same for every
+workspace. Re-run this script after changing it and commit the JSON; ``--check`` only reports
+whether the committed file is current (dev/tests/test_repo_consistency.py runs it).
+
+    python dashboards/build_ecg_demo_dashboard.py           # rewrites dashboards/ecg12_afib.lvdash.json
+    python dashboards/build_ecg_demo_dashboard.py --check   # exit 1 if it would change
 
 The demo scores ECGs on two separate paths, and the dashboard shows them in two separate
 sections, each with its own source tables:
 
-* **Batch monitoring** (DAILY job): 07_arr_triage / 08_afib_classify load the champion models from
-  Unity Catalog as Spark UDFs and score on the Spark workers; they never call the endpoints.
-  Source tables:
-  ``arr_triaged_12l_<date>`` (every ECG of one day, with its triage call) and
+* **Batch monitoring** (DAILY job): 07_arr_triage / 08_afib_classify score with the champion models
+  loaded from Unity Catalog, on the job's driver; they never call the endpoints. Source tables:
+  ``arr_triage_history_12l`` (every ECG of every day, with its triage call) and
   ``dailyOrweekly_arr_afib_inference_12l`` (the flagged ECGs of every day, with the AFib call).
   Tiles: the day's funnel (landed -> flagged -> AFib-positive), arrivals per hour, triage by true
-  rhythm, the AFib-probability distribution, AFib-positive share by age band, the daily trend and
-  the flagged-patient worklist.
+  rhythm, the AFib-probability distribution, AFib-positive share by age band and the
+  flagged-patient worklist, all for the LATEST batch date in ``arr_triage_history_12l`` (so they
+  form one coherent funnel), plus the daily trend over every date.
 * **Live serving** (the app): every Triage -> Classify click queries the endpoints, which log each
   request and response to their AI Gateway inference tables ``bio_ecg12_arr_payload`` and
   ``bio_ecg12_afib_payload``. Tiles: requests, model execution time and payloads not logged
@@ -18,78 +28,49 @@ sections, each with its own source tables:
   probabilities, and the latest requests. Only the small response JSON is parsed; the ~650 KB
   request JSON (the ECG itself) is only measured (its size), never parsed.
 
-Table, model and endpoint names come from ../common/config.py. Writes the ``lakeview create``
-request body; creating the dashboard is a gated live step (see README.md):
+Until data exists the tiles show errors, not empty charts: the batch tiles until the DAILY job
+has run once (the tables do not exist before), the live tiles until AI Gateway has delivered the
+first inference-table logs. AI Gateway creates each inference table with a placeholder schema
+(``databricks_request_id`` only) when 05_serve_endpoints enables it and adds the real columns
+with the first delivered batch of logs, best effort, typically within about an hour of the first
+app request; until then the live queries fail with UNRESOLVED_COLUMN.
 
-    python build_ecg_demo_dashboard.py body.json --catalog <catalog> --warehouse-id <id> \
-        --parent-path /Workspace/Users/<you> --profile <profile> --date 2026-10-29
-    databricks lakeview create --json @body.json -p <profile>
-
-``lakeview create`` makes a NEW dashboard; set common/config.py DASHBOARD_ID to its id (and copy
-config.py into the app, see app/README.md) so the app embeds it. Until then the app embeds nothing.
-
-The batch funnel, arrivals, histogram, patient-context and worklist tiles cover ONE day (--date)
-so they form a coherent funnel (landed -> flagged -> AFib-positive from the same batch); the
-daily trend and the live-serving section cover every day. Every query reads 12-lead tables only,
-never the live 8-lead demo's. ``--catalog`` / ``--schema`` point the queries at another location
-(e.g. to test them against an earlier run); the defaults come from config.py.
+Table, model and endpoint names come from ../common/config.py.
 """
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # projects/ecg12-afib -> common/
 from common import config  # noqa: E402
 
+OUT = Path(__file__).resolve().parent / "ecg12_afib.lvdash.json"
+
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("out", help="request-body JSON path")
-parser.add_argument("--date", default="", help="day for the single-day tiles, YYYY-MM-DD (default: today UTC)")
-parser.add_argument("--catalog", required=True, help="Unity Catalog catalog")
-parser.add_argument("--schema", default=config.SCHEMA, help="Unity Catalog schema (default: config.SCHEMA)")
-parser.add_argument("--warehouse-id", required=True, help="SQL warehouse the dashboard runs on")
-parser.add_argument("--parent-path", required=True, help="workspace folder for the new dashboard")
-parser.add_argument("--profile", required=True,
-                    help="Databricks CLI profile used to read the payload tables' columns (live section)")
+parser.add_argument("--check", action="store_true", help=f"exit 1 if {OUT.name} is not current; write nothing")
 args = parser.parse_args()
 
-day = config.resolve_run_date(args.date)
-LOC = (args.catalog, args.schema)
-TRI = config.daily_table(config.TRIAGED_TABLE_PREFIX, day, *LOC)        # arr_triaged_12l_<YYYYMMDD>
-INF = config.uc_name(config.INFERENCE_TABLE, *LOC)                      # dailyOrweekly_arr_afib_inference_12l
-ARR_PAY = config.payload_table(config.ARR_ENDPOINT, *LOC)               # bio_ecg12_arr_payload
-AFIB_PAY = config.payload_table(config.AFIB_ENDPOINT, *LOC)             # bio_ecg12_afib_payload
+# Bare table names: the bundle's dataset_catalog / dataset_schema supply catalog and schema.
+TRI = config.TRIAGE_HISTORY_TABLE                                    # arr_triage_history_12l
+INF = config.INFERENCE_TABLE                                         # dailyOrweekly_arr_afib_inference_12l
+ARR_PAY = config.payload_table_name(config.ARR_ENDPOINT)             # bio_ecg12_arr_payload
+AFIB_PAY = config.payload_table_name(config.AFIB_ENDPOINT)           # bio_ecg12_afib_payload
 
-
-def table_columns(table):
-    """Column names of ``table`` (empty when it does not exist or cannot be read)."""
-    result = subprocess.run(["databricks", "tables", "get", table, "-p", args.profile, "-o", "json"],
-                            capture_output=True, text=True)
-    if result.returncode != 0:
-        return set()
-    return {c["name"] for c in json.loads(result.stdout).get("columns", [])}
-
-
-# AI Gateway creates an inference table with a placeholder schema (databricks_request_id only) and
-# adds the real columns with the first delivered batch of logs (best effort, typically within about
-# an hour of the first request). Until both tables have them, the live widgets would fail with
-# UNRESOLVED_COLUMN, so the live section shows a note instead; re-run this builder afterwards.
-LIVE_COLUMNS = {"request_time", "status_code", "execution_duration_ms", "request", "response", "logging_error_codes"}
-LIVE_READY = all(LIVE_COLUMNS <= table_columns(t) for t in (ARR_PAY, AFIB_PAY))
-INF_DAY = f"{config.BATCH_DATE_COL} = DATE'{day.isoformat()}'"
+DAY = config.BATCH_DATE_COL
+LATEST_DAY = f"{DAY} = (SELECT max({DAY}) FROM {TRI})"               # single-day tiles: the latest batch
 AFIB_POS = f"afib_predictions_1 > {config.AFIB_THRESHOLD}"
 RHYTHM = "CASE rhythm_label WHEN 0 THEN 'NSR' WHEN 1 THEN 'AFib' WHEN 2 THEN 'Other' END"
 AGE_BAND = ("CASE WHEN age_years < 50 THEN '40-49' WHEN age_years < 60 THEN '50-59' "
             "WHEN age_years < 70 THEN '60-69' WHEN age_years < 80 THEN '70-79' ELSE '80-90' END")
 ARR_LABEL = f"{config.ARR_ENDPOINT} (triage)"
 AFIB_LABEL = f"{config.AFIB_ENDPOINT} (classify)"
-# Response JSON of each endpoint (checked against logged rows): ARR {"predictions": [{"arr_prob":
-# p, "arr_flag": f}, ...]}, AFib {"predictions": [[p_not_afib, p_afib], ...]}; one entry per ECG.
+# Response JSON of each endpoint: ARR {"predictions": [{"arr_prob": p, "arr_flag": f}, ...]},
+# AFib {"predictions": [[p_not_afib, p_afib], ...]}; one entry per ECG.
 ARR_RESPONSE = "'predictions ARRAY<STRUCT<arr_prob: DOUBLE, arr_flag: DOUBLE>>'"
 AFIB_RESPONSE = "'predictions ARRAY<ARRAY<DOUBLE>>'"
 
-# Validated categorical colors: rhythm classes (same as the notebooks' plots) and endpoints.
+# Categorical colors: rhythm classes (same as the notebooks' plots) and endpoints.
 RHYTHM_COLORS = [{"value": "NSR", "color": "#2a78d6"}, {"value": "AFib", "color": "#eb6834"},
                  {"value": "Other", "color": "#1baf7a"}]
 ENDPOINT_COLORS = [{"value": ARR_LABEL, "color": "#6250d6"}, {"value": AFIB_LABEL, "color": "#eda100"}]
@@ -106,45 +87,44 @@ def payload_rows(table, label):
 
 datasets = [
     # --- Batch monitoring (DAILY job: models loaded from UC, endpoints not called) ---------------
-    {"name": "funnel", "displayName": "Batch: triage funnel (one day)", "queryLines": [
-        f"SELECT (SELECT COUNT(*) FROM {TRI}) AS total_signals, ",
-        f"(SELECT COUNT(*) FROM {TRI} WHERE arr_flag=1) AS flagged_abnormal, ",
-        f"(SELECT COUNT(*) FROM {INF} WHERE {AFIB_POS} AND {INF_DAY}) AS afib_positive"]},
+    {"name": "funnel", "displayName": "Batch: triage funnel (latest day)", "queryLines": [
+        f"SELECT (SELECT COUNT(*) FROM {TRI} WHERE {LATEST_DAY}) AS total_signals, ",
+        f"(SELECT COUNT(*) FROM {TRI} WHERE {LATEST_DAY} AND arr_flag = 1) AS flagged_abnormal, ",
+        f"(SELECT COUNT(*) FROM {INF} WHERE {LATEST_DAY} AND {AFIB_POS}) AS afib_positive"]},
     # Each ECG's acquisition time within the day (06_generate_batch_data spreads them over clinic hours).
-    {"name": "arrivals", "displayName": "Batch: ECGs landed per hour (one day)", "queryLines": [
+    {"name": "arrivals", "displayName": "Batch: ECGs landed per hour (latest day)", "queryLines": [
         f"SELECT hour(acquisition_datetime_utc) AS hour_utc, {RHYTHM} AS rhythm, COUNT(*) AS n ",
-        f"FROM {TRI} GROUP BY hour(acquisition_datetime_utc), rhythm_label ORDER BY hour_utc, rhythm_label"]},
-    {"name": "triage_accuracy", "displayName": "Batch: triage by rhythm (one day)", "queryLines": [
+        f"FROM {TRI} WHERE {LATEST_DAY} ",
+        "GROUP BY hour(acquisition_datetime_utc), rhythm_label ORDER BY hour_utc, rhythm_label"]},
+    {"name": "triage_accuracy", "displayName": "Batch: triage by rhythm (latest day)", "queryLines": [
         f"SELECT {RHYTHM} AS rhythm, ",
-        "CASE WHEN arr_flag=1 THEN 'flagged (->afib)' ELSE 'not flagged' END AS triage, ",
-        f"COUNT(*) AS n FROM {TRI} GROUP BY rhythm_label, arr_flag ORDER BY rhythm_label"]},
-    {"name": "prob_hist", "displayName": "Batch: AFib probability (one day)", "queryLines": [
-        f"SELECT ROUND(afib_predictions_1,1) AS prob_bin, COUNT(*) AS n FROM {INF} ",
-        f"WHERE {INF_DAY} GROUP BY ROUND(afib_predictions_1,1) ORDER BY prob_bin"]},
+        "CASE WHEN arr_flag = 1 THEN 'flagged (->afib)' ELSE 'not flagged' END AS triage, ",
+        f"COUNT(*) AS n FROM {TRI} WHERE {LATEST_DAY} GROUP BY rhythm_label, arr_flag ORDER BY rhythm_label"]},
+    {"name": "prob_hist", "displayName": "Batch: AFib probability (latest day)", "queryLines": [
+        f"SELECT ROUND(afib_predictions_1, 1) AS prob_bin, COUNT(*) AS n FROM {INF} ",
+        f"WHERE {LATEST_DAY} GROUP BY ROUND(afib_predictions_1, 1) ORDER BY prob_bin"]},
     {"name": "trend", "displayName": "Batch: daily trend (every day)", "queryLines": [
-        f"SELECT {config.BATCH_DATE_COL} AS date, ",
+        f"SELECT {DAY} AS date, ",
         "COUNT(*) AS afib_classified, ",
         f"SUM(CASE WHEN {AFIB_POS} THEN 1 ELSE 0 END) AS afib_positive FROM {INF} ",
         "GROUP BY 1 ORDER BY 1"]},
     # Patient context: every screened patient of the day (TRI) by age band, with the AFib model's
     # call where they were flagged and classified (INF).
-    {"name": "afib_by_age", "displayName": "Batch: AFib-positive by age band (one day)", "queryLines": [
+    {"name": "afib_by_age", "displayName": "Batch: AFib-positive by age band (latest day)", "queryLines": [
         "SELECT t.age_band, COUNT(*) AS screened, ",
         f"SUM(CASE WHEN i.{AFIB_POS} THEN 1 ELSE 0 END) AS afib_positive, ",
         f"ROUND(SUM(CASE WHEN i.{AFIB_POS} THEN 1 ELSE 0 END) / COUNT(*), 3) AS afib_positive_share ",
-        f"FROM (SELECT {config.ID_COL}, {AGE_BAND} AS age_band FROM {TRI}) t ",
-        f"LEFT JOIN (SELECT {config.ID_COL}, afib_predictions_1 FROM {INF} WHERE {INF_DAY}) i USING ({config.ID_COL}) ",
-        "GROUP BY t.age_band ORDER BY t.age_band"]},
-    {"name": "worklist", "displayName": "Batch: flagged-patient worklist (one day)", "queryLines": [
-        "SELECT mrn, age_years AS age, sex, bmi, heart_rate_bpm AS hr_bpm, ",
+        f"FROM (SELECT {config.ID_COL}, {AGE_BAND} AS age_band FROM {TRI} WHERE {LATEST_DAY}) t ",
+        f"LEFT JOIN (SELECT {config.ID_COL}, afib_predictions_1 FROM {INF} WHERE {LATEST_DAY}) i ",
+        f"USING ({config.ID_COL}) GROUP BY t.age_band ORDER BY t.age_band"]},
+    {"name": "worklist", "displayName": "Batch: flagged-patient worklist (latest day)", "queryLines": [
+        f"SELECT {DAY} AS batch_date, mrn, age_years AS age, sex, bmi, heart_rate_bpm AS hr_bpm, ",
         "CONCAT(bp_systolic_mmhg, '/', bp_diastolic_mmhg) AS bp_mmhg, ",
         f"{RHYTHM} AS true_rhythm, ROUND(afib_predictions_1, 3) AS p_afib, ",
         f"CASE WHEN {AFIB_POS} THEN 'AFib' ELSE 'not AFib' END AS afib_call, ",
         "date_format(acquisition_datetime_utc, 'HH:mm') AS acquired_utc ",
-        f"FROM {INF} WHERE {INF_DAY} ORDER BY afib_predictions_1 DESC LIMIT 25"]},
-]
-# --- Live serving (the app: endpoint calls logged by AI Gateway) ----------------------------------
-live_datasets = [
+        f"FROM {INF} WHERE {LATEST_DAY} ORDER BY afib_predictions_1 DESC LIMIT 25"]},
+    # --- Live serving (the app: endpoint calls logged by AI Gateway) ------------------------------
     {"name": "live_requests", "displayName": "Live: endpoint requests (AI Gateway inference tables)", "queryLines": [
         payload_rows(ARR_PAY, ARR_LABEL), "UNION ALL ", payload_rows(AFIB_PAY, AFIB_LABEL),
         "ORDER BY request_time DESC"]},
@@ -158,8 +138,6 @@ live_datasets = [
         f"FROM (SELECT request_time, explode(from_json(response, {AFIB_RESPONSE}).predictions) AS p ",
         f"FROM {AFIB_PAY} WHERE status_code = 200 AND response IS NOT NULL)"]},
 ]
-if LIVE_READY:
-    datasets += live_datasets
 
 
 def field(name, expression=None):
@@ -237,16 +215,17 @@ layout = [
     text("title", ["## ECG/AFib on Databricks — 12-lead triage → classify\n", "\n",
                    "Synthetic 12-lead ECGs with synthetic patient records land in Unity Catalog; an *arr* (triage) "
                    "model flags abnormal rhythms; an *AFib* model classifies the flagged. Two scoring paths, two "
-                   f"sections below. Single-day batch tiles: **{day.isoformat()}**."], 0, 0, 12, 2),
+                   "sections below. The single-day batch tiles show the **latest batch date**."], 0, 0, 12, 2),
 
     # --- Batch monitoring ------------------------------------------------------------------------
     text("hdr-batch", ["### Batch monitoring — DAILY job (models loaded from Unity Catalog @"
                        f"{config.CHAMPION_ALIAS}, scored in the job; endpoints not called)\n", "\n",
-                       f"Sources: `{config.TRIAGED_TABLE_PREFIX}<date>` (every ECG of the day) and "
-                       f"`{config.INFERENCE_TABLE.lower()}` (flagged ECGs of every day)."], 0, 2, 12, 2),
-    counter("kpi-total", "funnel", "total_signals", "ECGs landed (day)", 0, 4),
-    counter("kpi-flagged", "funnel", "flagged_abnormal", "Flagged abnormal by triage (day)", 4, 4),
-    counter("kpi-afib", "funnel", "afib_positive", "AFib-positive by classifier (day)", 8, 4),
+                       f"Sources: `{TRI}` (every ECG of every day) and `{INF.lower()}` (flagged ECGs of every "
+                       f"day). Single-day tiles: the latest `{DAY}` in `{TRI}`. These tiles show an error until "
+                       "the DAILY job has run once."], 0, 2, 12, 2),
+    counter("kpi-total", "funnel", "total_signals", "ECGs landed (latest day)", 0, 4),
+    counter("kpi-flagged", "funnel", "flagged_abnormal", "Flagged abnormal by triage (latest day)", 4, 4),
+    counter("kpi-afib", "funnel", "afib_positive", "AFib-positive by classifier (latest day)", 8, 4),
     chart("arrivals-bar", "bar", "arrivals", cat("hour_utc", "Hour acquired (UTC)"), quant("n", "ECGs"),
           "ECGs landed per hour, by true rhythm (the day's incoming stream)", (0, 8, 6, 5),
           fields=[field("hour_utc"), field("n"), field("rhythm")],
@@ -257,11 +236,11 @@ layout = [
           fields=[field("rhythm"), field("n"), field("triage")],
           color=cat("rhythm", "True rhythm", RHYTHM_COLORS)),
     chart("prob-bar", "bar", "prob_hist", quant("prob_bin", "AFib probability (bin)"), quant("n", "Flagged ECGs"),
-          "AFib-probability distribution (flagged ECGs of the day)", (0, 13, 6, 5),
+          "AFib-probability distribution (flagged ECGs, latest day)", (0, 13, 6, 5),
           fields=[field("prob_bin"), field("n")]),
     chart("afib-age-bar", "bar", "afib_by_age", cat("age_band", "Age band (years)"),
           quant("afib_positive_share", "AFib-positive (share of screened)", PERCENT),
-          "AFib-positive share by age band (day)", (6, 13, 6, 5),
+          "AFib-positive share by age band (latest day)", (6, 13, 6, 5),
           fields=[field("age_band"), field("afib_positive_share")]),
     chart("trend-bar", "bar", "trend", {"fieldName": "date", "displayName": "Batch date", "scale": {"type": "categorical"}},
           {"scale": {"type": "quantitative"}, "fields": [
@@ -273,10 +252,10 @@ layout = [
               {"value": "Classified (flagged)", "color": "#2a78d6"},
               {"value": "AFib-positive", "color": "#eb6834"}]}}),
     table("worklist-table", "worklist", [
-        ("mrn", "MRN (synthetic)"), ("age", "Age"), ("sex", "Sex"), ("bmi", "BMI"),
+        ("batch_date", "Batch date"), ("mrn", "MRN (synthetic)"), ("age", "Age"), ("sex", "Sex"), ("bmi", "BMI"),
         ("hr_bpm", "HR (bpm)"), ("bp_mmhg", "BP (mmHg)"), ("true_rhythm", "True rhythm"),
         ("p_afib", "p(AFib)"), ("afib_call", "AFib call"), ("acquired_utc", "Acquired (UTC)")],
-        "Flagged-patient worklist (day, top 25 by AFib probability)", (0, 23, 12, 6)),
+        "Flagged-patient worklist (latest day, top 25 by AFib probability)", (0, 23, 12, 6)),
     text("patient-note", ["**Who is being flagged.** Every ECG row carries a synthetic patient + acquisition "
                           "record (`mrn`, age, sex, height, weight, BMI, blood pressure, heart rate measured from the "
                           "ECG, acquisition time). AFib rises with age, as in real populations. The worklist ranks the "
@@ -285,13 +264,16 @@ layout = [
 
     # --- Live serving ----------------------------------------------------------------------------
     text("hdr-live", ["### Live serving — the app (endpoint calls logged by AI Gateway)\n", "\n",
-                      f"Sources: `{config.ARR_ENDPOINT}_payload` and `{config.AFIB_ENDPOINT}_payload`, the "
-                      "endpoints' inference tables. Each *Triage → Classify* click in the app adds a row to the "
-                      "triage table, and one to the classify table when the ECG is flagged. Batch scoring never "
-                      "appears here. Execution time is the model's inference time only (no network overhead)."],
-         0, 31, 12, 2),
+                      f"Sources: `{ARR_PAY}` and `{AFIB_PAY}`, the endpoints' inference tables. Each "
+                      "*Triage → Classify* click in the app adds a row to the triage table, and one to the classify "
+                      "table when the ECG is flagged. Batch scoring never appears here. Execution time is the "
+                      "model's inference time only (no network overhead). **These tiles show an error until AI "
+                      "Gateway has delivered the first inference-table logs** (best effort, typically within about an "
+                      "hour of the first app request): until then the tables have no columns but "
+                      "`databricks_request_id`."],
+         0, 31, 12, 3),
 ]
-LIVE_Y = 33                                     # first row under the live-section header
+LIVE_Y = 34                                     # first row under the live-section header
 live_layout = [
     counter("kpi-requests", "live_requests", None, "Endpoint requests", 0, LIVE_Y,
             agg=("count(databricks_request_id)", "COUNT(`databricks_request_id`)"),
@@ -329,19 +311,14 @@ live_layout = [
         ("not_logged", "Not logged")],
         "Latest endpoint requests", (0, LIVE_Y + 14, 12, 6)),
 ]
-if not LIVE_READY:
-    live_layout = [text("live-pending", [
-        "**Live-serving logs appear here once AI Gateway delivers the first inference-table batch** "
-        "(best-effort, typically within ~1 hour of the first app request). Re-run the dashboard builder "
-        "to restore these charts."], 0, LIVE_Y, 12, 2)]
 layout += live_layout
 LINEAGE_Y = max(item["position"]["y"] + item["position"]["height"] for item in live_layout)
 layout += [
     text("lineage-note", ["**One governed platform.** Batch lineage: "
-                          f"`{config.BATCH_TABLE_PREFIX}<date>` → `{config.TRIAGED_TABLE_PREFIX}<date>` → "
-                          f"`{config.INFERENCE_TABLE.lower()}`. Live: app → endpoints `{config.ARR_ENDPOINT}` / "
-                          f"`{config.AFIB_ENDPOINT}` → `{config.ARR_ENDPOINT}_payload` / "
-                          f"`{config.AFIB_ENDPOINT}_payload`. Both paths use the same `@{config.CHAMPION_ALIAS}` "
+                          f"`{config.BATCH_TABLE_PREFIX}<date>` → `{config.TRIAGED_TABLE_PREFIX}<date>` "
+                          f"(+ `{TRI}`) → `{INF.lower()}`. Live: app → endpoints `{config.ARR_ENDPOINT}` / "
+                          f"`{config.AFIB_ENDPOINT}` → `{ARR_PAY}` / `{AFIB_PAY}`. Both paths use the same "
+                          f"`@{config.CHAMPION_ALIAS}` "
                           "model versions, promoted by the SETUP job's validation gate. Cheap triage screens every "
                           "ECG; the costlier AFib model runs only on the flagged."], 0, LINEAGE_Y, 12, 2),
 ]
@@ -351,7 +328,7 @@ dashboard = {
     "pages": [{"name": "overview", "displayName": "ECG/AFib 12-lead: batch + live",
                "pageType": "PAGE_TYPE_CANVAS", "layoutVersion": "GRID_V1", "layout": layout}],
     # Palette only: the counters rendered blank with custom font / background colors, so those
-    # stay at the workspace default (as in the live 8-lead dashboard, whose counters render).
+    # stay at the workspace default.
     "uiSettings": {"theme": {
         "selectionColor": {"light": "#2272B4", "dark": "#8ACAFF"},
         "visualizationColors": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6",
@@ -359,14 +336,12 @@ dashboard = {
         "widgetHeaderAlignment": "LEFT"}},
 }
 
-body = {
-    "display_name": "ECG-AFib 12-lead Demo (batch + live)",
-    "warehouse_id": args.warehouse_id,
-    "parent_path": args.parent_path,
-    "serialized_dashboard": json.dumps(dashboard),
-}
-
-with open(args.out, "w") as f:
-    json.dump(body, f)
-print(f"wrote request body -> {args.out} ({len(body['serialized_dashboard'])} chars serialized, day {day}, "
-      f"{args.catalog}.{args.schema}, live section: {'charts' if LIVE_READY else 'waiting for the first AI Gateway logs'})")
+text_out = json.dumps(dashboard, indent=2, ensure_ascii=False) + "\n"
+if args.check:
+    current = OUT.read_text() if OUT.exists() else ""
+    if current != text_out:
+        sys.exit(f"{OUT.name} is out of date: run python dashboards/{Path(__file__).name} and commit it")
+    print(f"{OUT.name} is current")
+else:
+    OUT.write_text(text_out)
+    print(f"wrote {OUT} ({len(datasets)} datasets, {len(layout)} widgets)")

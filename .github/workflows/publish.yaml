@@ -75,6 +75,7 @@ jobs:
           from sanitize_html import clean  # allowlist sanitizer: every rendered fragment goes through it
           
           import posixpath
+          import urllib.parse
 
           md_extensions = ['tables', 'fenced_code', 'toc']   # toc: ids on headings, for #anchor links
           repo_url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}"
@@ -87,6 +88,22 @@ jobs:
               md_sections[path] = f"{path.split('/')[1]}__readme"
           for path in sorted(glob.glob('projects/*/docs/*.md')):
               md_sections[path] = f"{path.split('/')[1]}__docs__{os.path.splitext(os.path.basename(path))[0]}"
+
+          def repo_path(base, ref_path, is_file=False):
+              """``ref_path`` (relative to the folder ``base`` of a markdown file) as a normalised
+              repository path, or None when it is not one: URL-decoded first, then rejected if empty,
+              absolute, protocol-relative, containing a backslash, leaving the repository (``..`` /
+              ``../...`` after normalisation), or not present in this checkout (a file when
+              ``is_file``, else a file or folder), so only real repository paths get a GitHub URL."""
+              decoded = urllib.parse.unquote(ref_path)
+              if not decoded or decoded.startswith('/') or '\\' in decoded:
+                  return None
+              resolved = posixpath.normpath(posixpath.join(base, decoded))
+              if resolved in ('.', '..') or resolved.startswith('../') or resolved.startswith('/'):
+                  return None
+              if not (os.path.isfile(resolved) if is_file else os.path.exists(resolved)):
+                  return None
+              return resolved
 
           def render_markdown(path):
               """(title, sanitized HTML) of one markdown file. Heading ids get the section id as prefix
@@ -106,22 +123,29 @@ jobs:
                   if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', href):      # https:, mailto: ...
                       continue
                   target, _, anchor = href.partition('#')
-                  resolved = posixpath.normpath(posixpath.join(base, target)) if target else path
-                  if resolved in md_sections:
+                  resolved = repo_path(base, target) if target else path
+                  if resolved is None:
+                      del a['href']                       # not a path in this repository: no link
+                  elif resolved in md_sections:
                       a['href'] = f"#{md_sections[resolved]}"
                       a['data-section'] = md_sections[resolved]
                       if anchor:
                           a['data-anchor'] = f"{md_sections[resolved]}--{anchor}"
                   else:
-                      a['href'] = f"{repo_url}/blob/{ref}/{resolved}" + (f"#{anchor}" if anchor else "")
+                      a['href'] = f"{repo_url}/blob/{ref}/{urllib.parse.quote(resolved)}" + (f"#{anchor}" if anchor else "")
               # Relative images (e.g. docs/images/*.png) -> the file itself at the built commit, resolved
-              # against this markdown file, so the https src passes the sanitizer; anything with a
-              # scheme is left to the sanitizer (only http(s) survives: no data:, no javascript:).
+              # against this markdown file (repo_path), so the https src passes the sanitizer; a path
+              # that is not inside the repository loses its src. Anything with a scheme is left to the
+              # sanitizer (only http(s) survives: no data:, no javascript:).
               for img in soup.find_all('img', src=True):
                   src = img['src'].strip()
-                  if src and not re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', src) and not src.startswith('//'):
-                      resolved = src.lstrip('/') if src.startswith('/') else posixpath.normpath(posixpath.join(base, src))
-                      img['src'] = f"{repo_url}/raw/{ref}/{resolved}"
+                  if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', src):
+                      continue
+                  resolved = repo_path(base, src.split('#', 1)[0].split('?', 1)[0], is_file=True)
+                  if resolved is None:
+                      del img['src']
+                  else:
+                      img['src'] = f"{repo_url}/raw/{ref}/{urllib.parse.quote(resolved)}"
               heading = soup.find('h1')
               title = ' '.join(heading.get_text().split()) if heading else os.path.basename(path)   # text only
               return title, clean(str(soup))

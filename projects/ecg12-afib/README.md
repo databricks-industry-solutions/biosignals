@@ -1,6 +1,7 @@
 # ECG/AFib triage on 12-lead ECGs
 
-> **Not for clinical use.** Synthetic data only. See the [disclaimer](../../README.md#disclaimer).
+> **Not for clinical use as provided.** Synthetic data only; any clinical use would need your own
+> clinical validation and regulatory approval. See the [disclaimer](../../README.md#disclaimer).
 
 Two models screen synthetic 12-lead electrocardiograms (ECGs): an arrhythmia (ARR) model flags
 abnormal ones, and an atrial fibrillation (AFib) model classifies the flagged ones. The project

@@ -5,11 +5,12 @@ By using this repository and the notebooks within, you consent to Databricks col
 
 ## Where the data in this repository comes from
 
-This repository contains no data files. Projects either generate synthetic data with their own
-code or read public-domain datasets when their notebooks run, and write the results to tables in
-the user's own Unity Catalog catalog. No identifiable patient data is used, stored or included.
-Each project's section below says where its data comes from; today every project generates
-synthetic data.
+This repository contains no data files and no personally identifiable information (PII), in data
+or code. Projects either generate synthetic data with their own code or read public datasets
+that are de-identified, used under their license and attributed to their source, when their
+notebooks run, and write the results to tables in the user's own Unity Catalog catalog. Each
+project's section below says where its data comes from and, for a public dataset, its source and
+license; today every project generates synthetic data.
 
 `projects/ecg12-afib`:
 

@@ -12,6 +12,8 @@ held-out data, promote, serve, score a daily batch, and monitor.
 a pull request (see the root [Contributing](../../README.md#contributing) section) and add
 yourself here.
 
+![Lead II rhythm strips for the three synthetic rhythms](docs/images/lead_ii_rhythm_strips.png)
+
 ## What's in it
 
 | Part | What it does |

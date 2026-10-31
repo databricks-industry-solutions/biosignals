@@ -10,7 +10,7 @@ They run nothing in a workspace, so they cannot catch workspace-specific problem
 Catalog tag policy on a key the notebooks write (`GOVERNED_TAG_VALUES` in `conftest.py` lists the
 values the notebooks may write; add your workspace's policies there) or what the serverless
 environments install. **The real pre-deployment check is a live run:** the SETUP job, then one
-DAILY run, before unpausing the DAILY schedule (see [`../../README.md`](../../README.md)).
+DAILY run, before unpausing the DAILY schedule (see [`../../docs/deploy.md`](../../docs/deploy.md)).
 
 ## What each file checks
 

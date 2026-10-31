@@ -96,4 +96,4 @@ UV_FROZEN=1 uv run ty check src                 # Python
 ./node_modules/.bin/tsc --noEmit -p tsconfig.json   # TypeScript
 ```
 
-Deploy steps are in [`../README.md`](../README.md).
+Deploy steps are in [`../docs/deploy.md`](../docs/deploy.md).

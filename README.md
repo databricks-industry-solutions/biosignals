@@ -90,4 +90,4 @@ Each project lists its packages, versions, licenses and source links in its own 
 
 | Project | Package licenses |
 |---|---|
-| `ecg12-afib` | [projects/ecg12-afib/README.md](projects/ecg12-afib/README.md#third-party-packages-and-licenses) |
+| `ecg12-afib` | [projects/ecg12-afib/docs/third-party-licenses.md](projects/ecg12-afib/docs/third-party-licenses.md) |

@@ -15,7 +15,7 @@ steps such work usually needs:
 
 Each project covers part or all of this. The first, `ecg12-afib`, generates synthetic ECGs and
 covers modeling and use; ingest from real-world formats and signal processing are open for new
-projects (see [Contributing](#contributing)).
+projects (see [Contributing](#contributing)). Each project's README credits its contributors.
 
 [![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
 [![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
@@ -29,8 +29,9 @@ projects (see [Contributing](#contributing)).
 |---|---|
 | [`ecg12-afib`](projects/ecg12-afib/README.md) | Synthetic 12-lead ECGs: an arrhythmia model screens every ECG and an atrial fibrillation (AFib) model classifies the flagged ones. Setup job (generate, train, validate, promote, serve), daily batch job, Databricks App for live triage, AI/BI dashboard. |
 
-Each project lives in `projects/<name>/` with its own bundle (`databricks.yml`) and README:
-prerequisites, settings, deploy steps, costs, teardown and package licenses.
+Each project lives in `projects/<name>/` with its own README (prerequisites, settings, how to run
+it, costs, teardown, contributors and package licenses) and, where it deploys jobs, apps or
+dashboards, its own bundle (`databricks.yml`).
 
 ## Installation Guidelines
 
@@ -50,9 +51,10 @@ each README says which, and how to remove them.
 2. Utilize the Databricks CLI to test your changes against a Databricks workspace of your choice.
 3. Contribute to repositories with pull requests (PRs), ensuring that you always have a second-party review from a capable teammate
 
-New projects go in `projects/<name>/` with their own bundle, README and package-license tables,
-use synthetic or public-domain data only, and keep workspace-specific values out of committed
-files. CI validates the bundle of each project a pull request changes; it never deploys. See
+New projects go in `projects/<name>/` with their own README (including a Contributors section and
+package-license tables) and, where they deploy workspace resources, their own bundle. Use
+synthetic or public-domain data only, and keep workspace-specific values out of committed files.
+CI validates the bundle of each changed project that has one; it never deploys. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer

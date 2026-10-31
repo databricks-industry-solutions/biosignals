@@ -393,6 +393,13 @@ abnormalities or other waveform signatures) belong in their own projects under `
 with its own bundle, README and tests, rather than in this one. This project keeps to the
 two-model triage → AFib cascade.
 
+## Contributors
+
+- May Merkle-Tan ([@hengrumay](https://github.com/hengrumay))
+
+To contribute to this project, open a pull request (see the root
+[Contributing](../../README.md#contributing) section) and add yourself to this list.
+
 ## Third-party packages and licenses
 
 The source in this project is provided subject to the Databricks License (see

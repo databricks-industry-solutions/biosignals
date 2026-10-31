@@ -58,10 +58,9 @@ from common.ecg_signal_gen import generate_ecg_batch
 # COMMAND ----------
 
 # DBTITLE 1,Parameters
-dbutils.widgets.text("catalog_name", config.CATALOG, label="UC_catalog_name")
+dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
-catalog = dbutils.widgets.get("catalog_name")
-schema = dbutils.widgets.get("schema_name")
+catalog, schema = config.uc_location(dbutils.widgets.get("catalog_name"), dbutils.widgets.get("schema_name"))
 
 # (model, endpoint) pairs, triage first.
 SERVED = (

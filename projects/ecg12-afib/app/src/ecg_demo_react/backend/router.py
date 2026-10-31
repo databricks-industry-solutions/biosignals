@@ -35,18 +35,21 @@ def me(user_ws: Dependencies.UserClient):
 
 
 @router.get("/app-config", response_model=AppConfigOut, operation_id="appConfig")
-def app_config():
+def app_config(settings: Dependencies.Config, ws: Dependencies.Client):
+    """Deep-link names for the UI: the workspace from the app's own credentials (the Apps runtime
+    sets DATABRICKS_HOST / DATABRICKS_WORKSPACE_ID), the Unity Catalog location and dashboard from
+    the app's environment (AppConfig), the model and endpoint names from common/config.py."""
     return AppConfigOut(
-        workspace_host=config.WORKSPACE_HOST,
-        workspace_id=config.WORKSPACE_ID,
-        catalog=config.CATALOG,
-        uc_schema=config.SCHEMA,
+        workspace_host=(ws.config.host or "").rstrip("/"),
+        workspace_id=str(ws.get_workspace_id()),
+        catalog=settings.catalog,
+        uc_schema=settings.uc_schema,
         arr_endpoint=config.ARR_ENDPOINT,
         afib_endpoint=config.AFIB_ENDPOINT,
         arr_model=config.ARR_MODEL_NAME,
         afib_model=config.AFIB_MODEL_NAME,
         inference_table=config.INFERENCE_TABLE.lower(),
-        dashboard_id=config.DASHBOARD_ID,
+        dashboard_id=settings.dashboard_id or None,
         n_leads=config.N_LEADS,
         champion_alias=config.CHAMPION_ALIAS,
     )

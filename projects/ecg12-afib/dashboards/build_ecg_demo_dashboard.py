@@ -21,8 +21,9 @@ sections, each with its own source tables:
 Table, model and endpoint names come from ../common/config.py. Writes the ``lakeview create``
 request body; creating the dashboard is a gated live step (see README.md):
 
-    python build_ecg_demo_dashboard.py /tmp/dash_body.json --date 2026-10-29
-    databricks lakeview create --json @/tmp/dash_body.json -p fevm-mmt-aws-usw2
+    python build_ecg_demo_dashboard.py body.json --catalog <catalog> --warehouse-id <id> \
+        --parent-path /Workspace/Users/<you> --profile <profile> --date 2026-10-29
+    databricks lakeview create --json @body.json -p <profile>
 
 ``lakeview create`` makes a NEW dashboard; set common/config.py DASHBOARD_ID to its id (and copy
 config.py into the app, see app/README.md) so the app embeds it. Until then the app embeds nothing.
@@ -43,14 +44,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # projects/ecg
 from common import config  # noqa: E402
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("out", nargs="?", default="/tmp/dash_body.json", help="request-body JSON path")
+parser.add_argument("out", help="request-body JSON path")
 parser.add_argument("--date", default="", help="day for the single-day tiles, YYYY-MM-DD (default: today UTC)")
-parser.add_argument("--catalog", default=config.CATALOG, help="Unity Catalog catalog (default: config.CATALOG)")
+parser.add_argument("--catalog", required=True, help="Unity Catalog catalog")
 parser.add_argument("--schema", default=config.SCHEMA, help="Unity Catalog schema (default: config.SCHEMA)")
-parser.add_argument("--warehouse-id", default="dafc5dff8eb8094a", help="SQL warehouse the dashboard runs on")
-parser.add_argument("--parent-path", default="/Users/may.merkletan@databricks.com/hls_timeseries",
-                    help="workspace folder for the new dashboard")
-parser.add_argument("--profile", default="fevm-mmt-aws-usw2",
+parser.add_argument("--warehouse-id", required=True, help="SQL warehouse the dashboard runs on")
+parser.add_argument("--parent-path", required=True, help="workspace folder for the new dashboard")
+parser.add_argument("--profile", required=True,
                     help="Databricks CLI profile used to read the payload tables' columns (live section)")
 args = parser.parse_args()
 

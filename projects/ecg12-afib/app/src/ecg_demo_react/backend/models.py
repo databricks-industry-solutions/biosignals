@@ -44,7 +44,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class AppConfigOut(BaseModel):
-    """Names the UI needs for deep links, from common/config.py (single source of truth)."""
+    """Names the UI needs for deep links (see router.app_config for where each comes from)."""
     workspace_host: str
     workspace_id: str
     catalog: str
@@ -54,6 +54,6 @@ class AppConfigOut(BaseModel):
     arr_model: str
     afib_model: str
     inference_table: str
-    dashboard_id: str | None   # None until the 12-lead dashboard exists; the UI then shows no embed
+    dashboard_id: str | None   # None when no dashboard id is configured; the UI then shows no embed
     n_leads: int
     champion_alias: str        # the model alias the endpoints serve (lowercase, as Unity Catalog stores it)

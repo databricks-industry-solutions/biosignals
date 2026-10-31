@@ -51,12 +51,12 @@ from common.ecg_signal_gen import describe_lead, generate_ecg_batch
 
 # DBTITLE 1,Parameters (usable as a job task; one shared run_date)
 dbutils.widgets.text(config.RUN_DATE_PARAM, "", label="run_date (YYYY-MM-DD, empty = today UTC)")
-dbutils.widgets.text("catalog_name", config.CATALOG, label="UC_catalog_name")
+dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
 
 run_date = config.resolve_run_date(dbutils.widgets.get(config.RUN_DATE_PARAM))
-catalog_name = dbutils.widgets.get("catalog_name")
-schema_name = dbutils.widgets.get("schema_name")
+catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
+                                               dbutils.widgets.get("schema_name"))
 write_table = config.daily_table(config.BATCH_TABLE_PREFIX, run_date, catalog_name, schema_name)
 print(f"run_date: {run_date}\nwrite   : {write_table}")
 

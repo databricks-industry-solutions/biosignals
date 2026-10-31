@@ -65,13 +65,13 @@ AFIB_TEMPERATURE = float(config.AFIB_TEMPERATURE)
 
 # COMMAND ----------
 
-# DBTITLE 1,Parameters (UC location from the job; defaults from common/config.py)
-dbutils.widgets.text("catalog_name", config.CATALOG, label="UC_catalog_name")
+# DBTITLE 1,Parameters (UC location from the job: catalog_name required, schema_name defaults to biosignals)
+dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
 dbutils.widgets.text("model_name", config.AFIB_MODEL_NAME, label="afib_model_name")
 
-catalog_name = dbutils.widgets.get("catalog_name")
-schema_name = dbutils.widgets.get("schema_name")
+catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
+                                               dbutils.widgets.get("schema_name"))
 full_name = config.uc_name(dbutils.widgets.get("model_name"), catalog_name, schema_name)
 train_table = config.uc_name(config.TRAINING_TABLE, catalog_name, schema_name)
 print(f"model: {full_name} (registers @{config.CHALLENGER_ALIAS}) | data: {train_table} | "

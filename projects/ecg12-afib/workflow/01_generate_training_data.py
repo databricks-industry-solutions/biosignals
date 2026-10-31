@@ -25,7 +25,9 @@
 # MAGIC `heart_rate_bpm`, and `ecg1`..`ecg12` (one ARRAY<FLOAT> per lead, mV, 2500 samples at 250 Hz, in
 # MAGIC the order I, II, III, aVR, aVL, aVF, V1..V6), the same per-lead layout as the daily batch.
 # MAGIC
-# MAGIC **Compute:** standard serverless. Parameters: `catalog_name`, `schema_name`.
+# MAGIC **Compute:** standard serverless. Parameters: `catalog_name` (required: the SETUP job passes the
+# MAGIC bundle's `catalog` variable), `schema_name` (default `biosignals`). As the first task of the SETUP
+# MAGIC job it creates the schema when it does not exist yet (needs `CREATE SCHEMA` on the catalog).
 
 # COMMAND ----------
 
@@ -49,12 +51,14 @@ from common.ecg_signal_gen import LABEL_NAMES
 
 # COMMAND ----------
 
-# DBTITLE 1,Parameters (UC location from the job; defaults from common/config.py)
-dbutils.widgets.text("catalog_name", config.CATALOG, label="UC_catalog_name")
+# DBTITLE 1,Parameters (UC location from the job) + create the schema if needed
+dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
 
-train_table = config.uc_name(config.TRAINING_TABLE, dbutils.widgets.get("catalog_name"),
-                             dbutils.widgets.get("schema_name"))
+catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
+                                               dbutils.widgets.get("schema_name"))
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog_name}`.`{schema_name}`")
+train_table = config.uc_name(config.TRAINING_TABLE, catalog_name, schema_name)
 print(f"write: {train_table}\nsplits (ECGs, seed): {config.TRAINING_SPLITS}")
 
 # COMMAND ----------

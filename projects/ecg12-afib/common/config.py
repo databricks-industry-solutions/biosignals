@@ -4,8 +4,10 @@ Every notebook in ``workflow/``, the dashboard builder and the app backend read 
 here. The app keeps a byte-identical copy in ``app/src/ecg_demo_react/backend/common/``
 (``build_from_lockfiles.sh`` fails if it drifts).
 
-Notebook widgets / job parameters (``catalog_name``, ``schema_name``, ``run_date``) can
-override the Unity Catalog location and date at run time; the defaults live here.
+Nothing here names a workspace. The Unity Catalog location comes from the bundle variables
+``catalog`` (required) and ``schema`` (default ``SCHEMA``): the jobs pass them to every notebook
+as the ``catalog_name`` / ``schema_name`` parameters (widgets), and the app reads them from its
+environment (``databricks.yml``). The daily notebooks also take ``run_date``.
 
 The demo is a reference pattern, not a fixed pipeline: the catalog/schema, lead count, model
 and table names, training split, training settings and validation thresholds below are the
@@ -17,9 +19,9 @@ from __future__ import annotations
 import datetime as dt
 
 # --- Unity Catalog (UC) location ----------------------------------------------------------
-# Every table, model and inference table of this demo lives in CATALOG.SCHEMA. (The first
-# 12-lead run and the live 8-lead demo used schema ekg_afib; nothing here reads or writes it.)
-CATALOG = "mmt_aws_usw2_catalog"
+# Every table, model and inference table of this demo lives in <catalog>.<schema>. There is no
+# default catalog (each workspace has its own); SCHEMA is the default schema. The SETUP job's
+# first task creates the schema when it does not exist yet.
 SCHEMA = "biosignals"
 
 # --- Model-input contract -----------------------------------------------------------------
@@ -29,15 +31,13 @@ N_LEADS = 12
 
 # --- Models (UC registered models) and their serving endpoints ----------------------------
 # Each endpoint has the same name as the model it serves. Endpoint names are workspace-wide, so
-# these names are new: the first 12-lead run (schema ekg_afib) registered and served
-# arr_model_12l / afib_demo_12l, and the live 8-lead demo uses arr_model_mmt / afib_demo_mmt.
-# This code never reads or writes any of those models or endpoints.
+# one workspace holds one deployment of this project; for a second copy, change these names.
 ARR_MODEL_NAME = "bio_ecg12_arr"    # triage: abnormal rhythm -> arr_prob, arr_flag
 AFIB_MODEL_NAME = "bio_ecg12_afib"  # classify (flagged only): [p_not_afib, p_afib]
 ARR_ENDPOINT = ARR_MODEL_NAME
 AFIB_ENDPOINT = AFIB_MODEL_NAME
 # Their AI Gateway inference tables (enabled by 05_, read by the dashboard's live section) are
-# payload_table(endpoint) below: bio_ecg12_arr_payload and bio_ecg12_afib_payload.
+# payload_table_name(endpoint) below: bio_ecg12_arr_payload and bio_ecg12_afib_payload.
 # Model-version aliases, lowercase because Unity Catalog stores aliases lowercase.
 # 02_/03_ register every new version as CHALLENGER; only 04_validate_and_promote moves
 # CHAMPION, and only when the challenger passes VALIDATION_THRESHOLDS. Serving (05_) and batch
@@ -47,12 +47,10 @@ CHAMPION_ALIAS = "champion"
 ARR_FLAG_THRESHOLD = 0.5            # arr_flag = 1.0 when arr_prob >= this
 AFIB_THRESHOLD = 0.5                # "AFib" when p_afib > this
 
-# --- Batch scoring (07_arr_triage, 08_afib_classify) ----------------------------------------
-# The daily batch is scored on the Spark workers with mlflow.pyfunc.spark_udf. On serverless
-# compute a Python UDF gets 1 GB of memory, and one ECG is 12 x 2500 float32 values (120 KB), so
-# each model call gets at most this many ECGs (~30 MB): the batch is split into partitions of at
-# most this many ECGs before scoring, and the UDF's Arrow batches are capped at this many rows
-# where the compute allows it (scoring.score_spark_udf).
+# --- Spark-worker scoring (scoring.score_spark_udf; not used by the notebooks yet) -----------
+# The daily notebooks score on the driver. For the Spark-worker path (README, "Future work"): on
+# serverless compute a Python UDF gets 1 GB of memory, and one ECG is 12 x 2500 float32 values
+# (120 KB), so each model call gets at most this many ECGs (~30 MB).
 BATCH_UDF_ROWS_PER_PARTITION = 256
 
 # --- Training dataset (01_generate_training_data) -----------------------------------------
@@ -112,14 +110,11 @@ VALIDATION_THRESHOLDS: dict[str, dict[str, float]] = {
 VALIDATION_MIN_ROWS = 100           # fewer hold-out rows than this fails the gate
 
 # --- Daily batch tables ---------------------------------------------------------------------
-# Per-date tables are overwritten on every run, so they get a 12-lead prefix and can never
-# overwrite the live 8-lead demo's batch_data_<date> / arr_triaged_<date> tables.
+# Per-date tables, overwritten when a date is re-run (the 12l suffix marks the 12-lead tables).
 BATCH_TABLE_PREFIX = "batch_data_12l_"       # 06_generate_batch_data -> batch_data_12l_<YYYYMMDD>
 TRIAGED_TABLE_PREFIX = "arr_triaged_12l_"    # 07_arr_triage          -> arr_triaged_12l_<YYYYMMDD>
-# Accumulating results table (08_afib_classify), read by the 12-lead dashboard and the app. Its
-# own 12-lead name, so it never mixes with or writes to the live 8-lead demo's
-# dailyOrweekly_arr_afib_inference; re-running a date replaces only that date's rows (see
-# uc_io.write_date_slice).
+# Accumulating results table (08_afib_classify), read by the dashboard and the app; re-running a
+# date replaces only that date's rows (see uc_io.write_date_slice).
 INFERENCE_TABLE = "dailyOrweekly_arr_afib_inference_12l"
 BATCH_DATE_COL = "batch_date"
 ID_COL = "pseudo_patient_id"
@@ -129,18 +124,19 @@ ID_COL = "pseudo_patient_id"
 # crosses midnight still reads and writes a single date.
 RUN_DATE_PARAM = "run_date"
 
-# --- Workspace (app deep links) -----------------------------------------------------------
-WORKSPACE_HOST = "https://fevm-mmt-aws-usw2.cloud.databricks.com"
-WORKSPACE_ID = "7474658466980277"
-# 12-lead AI/BI dashboard the app embeds. None until that dashboard is created from
-# dashboards/build_ecg_demo_dashboard.py (a gated live step); set its id here then. While None,
-# the app shows a "not configured yet" note instead of an embed: it never falls back to the live
-# 8-lead demo's dashboard.
-DASHBOARD_ID: str | None = "01f1d45837441753a55c768f8b1fd70b"   # created 2026-10-30
+
+def uc_location(catalog: str | None, schema: str | None) -> tuple[str, str]:
+    """The ``catalog_name`` / ``schema_name`` parameters, checked: the catalog is required (no
+    default), an empty schema means ``SCHEMA``."""
+    catalog, schema = (catalog or "").strip(), (schema or "").strip() or SCHEMA
+    if not catalog:
+        raise ValueError("catalog_name is empty: the jobs pass the bundle's required `catalog` "
+                         "variable; when running a notebook by hand, type the catalog into the widget")
+    return catalog, schema
 
 
-def uc_name(name: str, catalog: str = CATALOG, schema: str = SCHEMA) -> str:
-    """Three-level UC name, e.g. ``uc_name(ARR_MODEL_NAME)``."""
+def uc_name(name: str, catalog: str, schema: str = SCHEMA) -> str:
+    """Three-level UC name, e.g. ``uc_name(ARR_MODEL_NAME, catalog)``."""
     return f"{catalog}.{schema}.{name}"
 
 
@@ -160,17 +156,21 @@ def date_tag(run_date: dt.date) -> str:
     return run_date.strftime("%Y%m%d")
 
 
-def daily_table(prefix: str, run_date: dt.date, catalog: str = CATALOG, schema: str = SCHEMA) -> str:
-    """Per-date table name, e.g. ``daily_table(BATCH_TABLE_PREFIX, d)``."""
+def daily_table(prefix: str, run_date: dt.date, catalog: str, schema: str = SCHEMA) -> str:
+    """Per-date table name, e.g. ``daily_table(BATCH_TABLE_PREFIX, d, catalog)``."""
     return uc_name(f"{prefix}{date_tag(run_date)}", catalog, schema)
 
 
-def payload_table(endpoint: str, catalog: str = CATALOG, schema: str = SCHEMA) -> str:
-    """AI Gateway inference table that ``05_serve_endpoints`` enables for ``endpoint``.
+def payload_table_name(endpoint: str) -> str:
+    """Table name of the AI Gateway inference table that ``05_serve_endpoints`` enables for
+    ``endpoint``: AI Gateway names it ``<table_name_prefix>_payload`` and 05_ passes the endpoint
+    name as the prefix, so ``payload_table_name(ARR_ENDPOINT)`` is ``bio_ecg12_arr_payload``."""
+    return f"{endpoint}_payload"
 
-    AI Gateway names it ``<table_name_prefix>_payload`` and 05_ passes the endpoint name as the
-    prefix, so ``payload_table(ARR_ENDPOINT)`` is ``<catalog>.<schema>.bio_ecg12_arr_payload``."""
-    return uc_name(f"{endpoint}_payload", catalog, schema)
+
+def payload_table(endpoint: str, catalog: str, schema: str = SCHEMA) -> str:
+    """Three-level name of ``payload_table_name(endpoint)``."""
+    return uc_name(payload_table_name(endpoint), catalog, schema)
 
 
 def ecg_columns(n_leads: int = N_LEADS) -> list[str]:

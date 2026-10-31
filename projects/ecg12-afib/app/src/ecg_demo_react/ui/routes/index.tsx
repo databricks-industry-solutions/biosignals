@@ -17,8 +17,9 @@ export const Route = createFileRoute("/")({ component: () => <App /> });
 const RHYTHMS = ["Random", "NSR (normal)", "AFib", "Other (tachycardia)"];
 
 // Platform-backend deep links (Unity Catalog–governed). Names come from the backend's
-// /api/app-config, which reads common/config.py, so nothing is hard-coded here.
-// The dashboard links stay undefined until a 12-lead dashboard id is configured.
+// /api/app-config (workspace, catalog/schema and dashboard id from the app's environment, model
+// and endpoint names from common/config.py), so nothing is hard-coded here.
+// The dashboard links stay undefined when no dashboard id is configured.
 function buildLinks(c: AppConfigOut) {
   const host = c.workspace_host;
   const dash = c.dashboard_id;
@@ -72,8 +73,8 @@ function App() {
           <Ext href={links?.apps}>Databricks Apps</Ext>
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          A reference pattern, not a fixed pipeline: the models, rhythm classes, lead count and
-          catalog/schema are set in <code>common/config.py</code> and the job definitions, so the same
+          A reference pattern, not a fixed pipeline: the catalog/schema are bundle variables and the
+          models, rhythm classes and lead count are set in <code>common/config.py</code>, so the same
           generate → train → validate → promote → serve cycle adapts to other signals and models.
         </p>
       </header>
@@ -348,16 +349,15 @@ function BatchTab({ links }: { links?: Links }) {
   );
 }
 
-/** Shown instead of an embed until the 12-lead dashboard exists (DASHBOARD_ID in common/config.py). */
+/** Shown instead of an embed when the app has no dashboard id (ECG_DEMO_REACT_DASHBOARD_ID). */
 function DashboardNotConfigured() {
   return (
     <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm">
-      <div className="font-semibold">12-lead dashboard not configured yet</div>
+      <div className="font-semibold">Dashboard not configured</div>
       <p className="mt-2 text-muted-foreground">
-        The 12-lead AI/BI dashboard is created in a later setup step from{" "}
-        <code>dashboards/build_ecg_demo_dashboard.py</code>. Once it exists, set its id as{" "}
-        <code>DASHBOARD_ID</code> in <code>common/config.py</code> and rebuild and redeploy the app.
-        Until then nothing is embedded here; the live 8-lead demo's dashboard is not shown in its place.
+        This app embeds the AI/BI dashboard whose id is in its <code>ECG_DEMO_REACT_DASHBOARD_ID</code>{" "}
+        environment variable. The bundle's <code>full</code> target deploys the dashboard and sets that
+        variable (<code>databricks.yml</code>); redeploy the app with it to show the dashboard here.
       </p>
     </div>
   );

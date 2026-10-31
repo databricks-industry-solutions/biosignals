@@ -10,6 +10,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..._metadata import app_name, app_slug
+from ..common.config import SCHEMA
 
 # --- Config ---
 
@@ -28,6 +29,14 @@ class AppConfig(BaseSettings):
         env_nested_delimiter="__",
     )
     app_name: str = Field(default=app_name)
+    # Where this deployment's tables and models live, and which AI/BI dashboard the Batch tab
+    # embeds. The bundle's `full` target sets them (databricks.yml, resources.apps.*.config.env)
+    # from its `catalog` / `schema` variables and the id of the dashboard it deploys, as
+    # ECG_DEMO_REACT_CATALOG, ECG_DEMO_REACT_UC_SCHEMA and ECG_DEMO_REACT_DASHBOARD_ID. The catalog
+    # has no default, so the app fails at startup without it; no dashboard id = no embed.
+    catalog: str
+    uc_schema: str = Field(default=SCHEMA)
+    dashboard_id: str | None = None
 
     @property
     def static_assets_path(self) -> Path:

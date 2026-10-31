@@ -70,11 +70,11 @@ from common.ecg_signal_gen import N_SAMPLES, derive_afib_truth, derive_arr_flag
 
 # COMMAND ----------
 
-# DBTITLE 1,Parameters (UC location from the job; defaults from common/config.py)
-dbutils.widgets.text("catalog_name", config.CATALOG, label="UC_catalog_name")
+# DBTITLE 1,Parameters (UC location from the job: catalog_name required, schema_name defaults to biosignals)
+dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
-catalog_name = dbutils.widgets.get("catalog_name")
-schema_name = dbutils.widgets.get("schema_name")
+catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
+                                               dbutils.widgets.get("schema_name"))
 
 # Per model: binary truth from the rhythm label, model output -> result columns, the
 # positive-class score, the call each model makes in production (07_ / 08_ / the app) and its

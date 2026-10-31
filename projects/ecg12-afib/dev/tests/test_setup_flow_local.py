@@ -4,8 +4,8 @@ training, and checks the data-first flow and the challenger -> validation gate -
 Stand-ins: notebook globals (dbutils, display, spark), Unity Catalog tables with Delta versions (an
 in-memory list of versions per table, behind the same DESCRIBE HISTORY / VERSION AS OF SQL that
 common/uc_io.py sends), and MLflow (a fake tracking store + model registry; a logged pyfunc model is
-cloudpickled and loaded back, so 04_ scores the very models 02_ / 03_ trained; like Unity Catalog, it
-refuses a tag value the workspace's tag policies do not allow, conftest.GOVERNED_TAG_VALUES).
+cloudpickled and loaded back, so 04_ scores the very models 02_ / 03_ trained; like Unity Catalog
+under a tag policy, it refuses a tag value conftest.GOVERNED_TAG_VALUES does not allow).
 05_serve_endpoints is not run (it creates serving endpoints). The splits and epochs are shrunk to
 keep the run short.
 Skipped without a local pyspark + Java, torch or cloudpickle."""
@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from common import config, uc_io
-from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES
+from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES, TEST_CATALOG
 
 SMALL_SPLITS = {config.TRAIN_SPLIT: (24, 11), config.VAL_SPLIT: (12, 99), config.HOLDOUT_SPLIT: (12, 314)}
 LENIENT = {"min_accuracy": 0.0, "min_roc_auc": 0.0}
@@ -32,6 +32,7 @@ class VersionedUC:
         self._session = session
         self.versions = {}
         self.reads = []
+        self.schemas = []
         self.catalog = SimpleNamespace(tableExists=lambda name: name in self.versions)
 
     def table(self, name):
@@ -39,6 +40,9 @@ class VersionedUC:
 
     def sql(self, statement):
         if statement.startswith("OPTIMIZE "):
+            return None
+        if m := re.fullmatch(r"CREATE SCHEMA IF NOT EXISTS `([^`]+)`\.`([^`]+)`", statement):
+            self.schemas.append((m[1], m[2]))
             return None
         if m := re.fullmatch(r"DESCRIBE HISTORY (\S+) LIMIT 1", statement):
             return SimpleNamespace(collect=lambda: [{"version": len(self.versions[m[1]]) - 1}])
@@ -186,7 +190,7 @@ def _run_notebook(name, uc):
     """Runs the notebook; returns its dbutils.notebook.exit value, or None when it runs to the end."""
     import matplotlib.pyplot as plt
 
-    values = {}
+    values = {"catalog_name": TEST_CATALOG}                 # the job parameter; the widget has no default
     dbutils = SimpleNamespace(
         widgets=SimpleNamespace(text=lambda key, default, label=None: values.setdefault(key, default),
                                 get=lambda key: values[key]),
@@ -214,11 +218,14 @@ def test_setup_notebooks_gate_promotes_both_or_neither(spark, monkeypatch):
     monkeypatch.setattr(config, "VALIDATION_THRESHOLDS", {config.ARR_MODEL_NAME: LENIENT, config.AFIB_MODEL_NAME: LENIENT})
     fake.install(monkeypatch)
     uc = VersionedUC(spark)
-    table = config.uc_name(config.TRAINING_TABLE)
-    arr, afib = config.uc_name(config.ARR_MODEL_NAME), config.uc_name(config.AFIB_MODEL_NAME)
+    table = config.uc_name(config.TRAINING_TABLE, TEST_CATALOG)
+    arr = config.uc_name(config.ARR_MODEL_NAME, TEST_CATALOG)
+    afib = config.uc_name(config.AFIB_MODEL_NAME, TEST_CATALOG)
 
-    # 01: the training dataset, persisted with its split column (Delta version 0).
+    # 01: the schema (created if missing), then the training dataset, persisted with its split
+    # column (Delta version 0).
     _run_notebook("01_generate_training_data.py", uc)
+    assert uc.schemas == [(TEST_CATALOG, config.SCHEMA)]
     data = uc.versions[table][0].toPandas()
     assert data.groupby(config.SPLIT_COL).size().to_dict() == {s: n for s, (n, _) in SMALL_SPLITS.items()}
     assert data[config.SAMPLE_ID_COL].is_unique and len(data["ecg12"].iloc[0]) == 2500

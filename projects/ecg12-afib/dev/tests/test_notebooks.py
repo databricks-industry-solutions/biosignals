@@ -61,12 +61,23 @@ def test_notebook_is_valid_databricks_source(path):
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.name)
-def test_no_live_8_lead_names_or_dropped_columns_in_code(path):
-    """Only markdown may mention the live 8-lead demo; code must use common/config names."""
+def test_no_dropped_columns_or_old_patterns_in_code(path):
+    """Code uses the 12-lead record and common/config names: no dropped patient columns, 8-lead
+    reshape, capitalised alias, cluster-library install or hyperparameter search."""
     code = " ".join(_code_tokens(path))
-    for stale in ("arr_model_mmt", "afib_demo_mmt", "0612-080540-j9spj7yq", "install_libraries",
-                  "pmh", "anti_htn", "input_list", "reshape(-1, 8", "@Champion", "ekg_afib.", "optuna"):
+    for stale in ("install_libraries", "pmh", "anti_htn", "input_list", "reshape(-1, 8", "@Champion", "optuna"):
         assert stale not in code, f"{path.name}: {stale!r}"
+
+
+@pytest.mark.parametrize("path", [p for p in NOTEBOOKS if p.name != "00_overview.py"], ids=lambda p: p.name)
+def test_catalog_is_a_required_parameter(path):
+    """No catalog default anywhere: the catalog_name widget starts empty and goes through
+    config.uc_location, which fails clearly when the job did not pass it."""
+    code = _python_source(path)
+    assert 'dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")' in code
+    assert 'dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")' in code
+    assert 'config.uc_location(dbutils.widgets.get("catalog_name")' in code
+    assert code.count('dbutils.widgets.get("catalog_name")') == 1
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.name)
@@ -74,7 +85,7 @@ def test_aliases_schema_and_tables_come_from_config(path):
     """No alias, schema or training-table name typed into code: they come from common/config.py."""
     for token in _code_tokens(path, names=False):
         literal = token.strip("'\"")
-        assert literal not in {"champion", "Champion", "challenger", config.SCHEMA, "ekg_afib",
+        assert literal not in {"champion", "Champion", "challenger", config.SCHEMA,
                                config.TRAINING_TABLE}, f"{path.name}: {token}"
         assert "@champion" not in token and "@challenger" not in token, f"{path.name}: {token}"
 
@@ -179,21 +190,26 @@ def test_training_reads_the_persisted_dataset_and_logs_thoroughly(name):
 
 
 @pytest.mark.parametrize("name", BATCH)
-def test_batch_scoring_is_distributed_with_spark_udf(name):
-    """07_ / 08_ wrap the pinned champion version as an mlflow spark_udf and score on the Spark
-    workers; nothing is collected to the driver for scoring (the gate, 04_, still scores driver-side)."""
+def test_batch_scoring_is_driver_side_at_the_pinned_champion(name):
+    """07_ / 08_ resolve champion to a version, load exactly that version and score on the driver
+    with score_driver_side, as the gate does; no spark_udf (README.md, "Future work")."""
     code = _python_source(WORKFLOW / name)
-    kind = "ARR" if name.startswith("07") else "AFIB"
-    assert f"result_type=scoring.{kind}_UDF_RESULT_TYPE" in code and "env_manager=scoring.UDF_ENV_MANAGER" in code
-    assert "mlflow.pyfunc.spark_udf(spark, " in code and "scoring.score_spark_udf(" in code
-    # The spark_udf call (which builds the workers' model environment) sits inside torch_cpu_wheels.
-    wrapped = code.split("with scoring.torch_cpu_wheels():", 1)[-1].split("\n\n", 1)[0]
-    assert "with scoring.torch_cpu_wheels():" in code and "mlflow.pyfunc.spark_udf(spark, " in wrapped
-    assert f"scoring.{kind.lower()}_udf_columns," in code
-    for driver_side in ("score_driver_side", "load_model", "toPandas"):
-        assert driver_side not in code, f"{name}: {driver_side}"
-    assert "# MAGIC %pip" not in (WORKFLOW / name).read_text()       # spark_udf builds the workers' environment
-    assert "score_driver_side" in _python_source(WORKFLOW / GATE)
+    kind = "arr" if name.startswith("07") else "afib"
+    assert f"{kind} = scoring.resolve_alias(MlflowClient(registry_uri=\"databricks-uc\"), {kind}_model_full)" in code
+    assert f"{kind}_model = mlflow.pyfunc.load_model({kind}.uri)" in code
+    assert code.count("scoring.score_driver_side(") == 1 and f"model_info={kind}.info" in code
+    for udf in ("spark_udf", "score_spark_udf", "torch_cpu_wheels", "UDF_ENV_MANAGER"):
+        assert udf not in code, f"{name}: {udf}"
+    assert "# MAGIC %pip" not in (WORKFLOW / name).read_text()       # the ML v5 environment has torch
+
+
+def test_triage_writes_the_history_slice_the_dashboard_reads():
+    """07_ writes every day's triage rows, without the ECG arrays, as one date slice of the fixed
+    table the dashboard reads (a per-date table cannot be a dashboard dataset)."""
+    code = _python_source(WORKFLOW / "07_arr_triage.py")
+    assert "history_table = config.uc_name(config.TRIAGE_HISTORY_TABLE, catalog_name, schema_name)" in code
+    assert ("uc_io.write_date_slice(spark, spark.table(write_table).drop(*ecg_cols), history_table, run_date)"
+            in code)
 
 
 def test_gate_logs_holdout_evaluation_artifacts_with_the_synthetic_caption():

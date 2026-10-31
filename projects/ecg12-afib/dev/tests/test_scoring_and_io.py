@@ -1,5 +1,6 @@
 """Tests for config.py, scoring.py and uc_io.py (Spark and MLflow replaced by small fakes, plus
-one check of the batch path against the real mlflow.pyfunc.spark_udf when mlflow is installed)."""
+one check of the Spark-worker path against the real mlflow.pyfunc.spark_udf when mlflow is installed;
+no job uses that path yet, see README.md "Future work")."""
 import datetime as dt
 import os
 from types import SimpleNamespace
@@ -16,28 +17,33 @@ from conftest import pickle_by_value_for_spark_workers
 # --- config ------------------------------------------------------------------------------
 
 def test_names_and_run_date():
-    assert (config.CATALOG, config.SCHEMA) == ("mmt_aws_usw2_catalog", "biosignals")
-    # New names: endpoint names are workspace-wide, and the first 12-lead run's arr_model_12l /
-    # afib_demo_12l endpoints must never be updated in place. Each endpoint is named after its model.
+    # No workspace in config: no catalog default, host, workspace id or dashboard id. The catalog is
+    # a required parameter (bundle variable -> job parameter / app environment).
+    assert config.SCHEMA == "biosignals"
+    assert not {"CATALOG", "WORKSPACE_HOST", "WORKSPACE_ID", "DASHBOARD_ID"} & set(vars(config))
+    assert config.uc_location("c", "s") == ("c", "s")
+    assert config.uc_location(" c ", "") == config.uc_location("c", None) == ("c", config.SCHEMA)
+    for empty in ("", "  ", None):
+        with pytest.raises(ValueError, match="catalog_name is empty"):
+            config.uc_location(empty, "s")
+    # Each endpoint is named after its model.
     assert (config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME) == ("bio_ecg12_arr", "bio_ecg12_afib")
     assert (config.ARR_ENDPOINT, config.AFIB_ENDPOINT) == (config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME)
-    assert not {config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME} & {"arr_model_12l", "afib_demo_12l",
-                                                               "arr_model_mmt", "afib_demo_mmt"}
-    # Its own 12-lead results table, never the live 8-lead demo's dailyOrweekly_arr_afib_inference.
+    # The accumulating tables, one slice per batch_date.
     assert config.INFERENCE_TABLE == "dailyOrweekly_arr_afib_inference_12l"
-    assert config.uc_name("x") == f"mmt_aws_usw2_catalog.{config.SCHEMA}.x"
+    assert config.TRIAGE_HISTORY_TABLE == "arr_triage_history_12l"
+    assert config.uc_name("x", "c") == f"c.{config.SCHEMA}.x"
     d = dt.date(2026, 10, 29)
     assert config.resolve_run_date("2026-10-29") == d
     assert config.resolve_run_date("") == dt.datetime.now(dt.timezone.utc).date()
     assert config.resolve_run_date(None) == dt.datetime.now(dt.timezone.utc).date()
     with pytest.raises(ValueError, match="run_date"):
         config.resolve_run_date("29-10-2026")
-    assert config.daily_table(config.BATCH_TABLE_PREFIX, d) == f"mmt_aws_usw2_catalog.{config.SCHEMA}.batch_data_12l_20261029"
+    assert config.daily_table(config.BATCH_TABLE_PREFIX, d, "c") == f"c.{config.SCHEMA}.batch_data_12l_20261029"
+    assert config.payload_table_name(config.ARR_ENDPOINT) == "bio_ecg12_arr_payload"
     assert config.payload_table(config.ARR_ENDPOINT, "c", "s") == "c.s.bio_ecg12_arr_payload"
     assert config.payload_table(config.AFIB_ENDPOINT, "c", "s") == "c.s.bio_ecg12_afib_payload"
     assert config.ecg_columns() == [f"ecg{i}" for i in range(1, 13)]
-    # No 12-lead dashboard yet: unset, never the live 8-lead demo's dashboard as a stand-in.
-    assert config.DASHBOARD_ID is None
 
 
 def test_model_lifecycle_and_training_settings():
@@ -201,11 +207,11 @@ def test_table_version_and_time_travel_read():
 
 
 def test_write_date_slice_refuses_a_table_without_batch_date():
-    """E.g. the live 8-lead demo's results table (no batch_date): nothing is written to it."""
+    """A table this function did not write (no batch_date column): nothing is written to it."""
     log = []
     with pytest.raises(ValueError, match="no batch_date column"):
         uc_io.write_date_slice(FakeSpark(["pseudo_patient_id", "afib_predictions_1"]), _df(log),
-                               "c.s.dailyorweekly_arr_afib_inference", dt.date(2026, 10, 29))
+                               "c.s.some_other_results_table", dt.date(2026, 10, 29))
     assert not any(entry[0] == "saveAsTable" for entry in log)
 
 
@@ -258,7 +264,7 @@ def test_score_driver_side_empty_input_skips_the_model(spark):
     assert {"afib_predictions_0", "afib_predictions_1", "afib_model_info"} <= set(out.columns)
 
 
-# --- score_spark_udf (daily batch) vs score_driver_side (gate), same outputs ---------------
+# --- score_spark_udf (Spark workers, unused by the jobs) vs score_driver_side, same outputs ---
 
 def _arr_predict(X):
     """Stand-in ARR model output: depends on lead order and sample order, so a wrong reshape shows."""

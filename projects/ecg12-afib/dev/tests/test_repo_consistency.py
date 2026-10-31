@@ -1,6 +1,6 @@
-"""Single-source-of-truth checks: the app's copy of common/, the bundle's defaults and sync rules,
-the job DAGs and compute, the schema and the model / endpoint names (only in config), and the
-dashboard builder's two sections."""
+"""Single-source-of-truth and portability checks: the app's copy of common/, the bundle's
+variables, targets and resources, the job DAGs and compute, model / endpoint / schema names only
+in config, no workspace-specific values in any committed file, and the generated dashboard."""
 import io
 import json
 import re
@@ -17,24 +17,12 @@ from conftest import DEMO_ROOT
 
 APP_COPY = DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend" / "common"
 MIRRORED = ["__init__.py", "config.py", "ecg_signal_gen.py", "patient_info.py"]
-
-APP_PREFIX = "ecg12-demo-"
-APP_TEMPLATE = APP_PREFIX + "${var.app_suffix}"     # the only shape the app resource name may take
-APP_NAME_MAX = 30                                   # Databricks app-name length limit
-# Apps deployed in the workspace on 2026-10-30 (`databricks apps list -p fevm-mmt-aws-usw2`),
-# including the live 8-lead demo `ekg-demo` and the earlier manual deploy of this demo under the
-# old prefix, `ekg12-demo-mmt`.
-DEPLOYED_APPS = ["app-demo", "dbx-unifiedchat-app-prod", "ekg-demo", "ekg12-demo-mmt", "glucosphere-app",
-                 "glucosphere-fw-v2-mmt", "gwb-app", "mcp-genesis-workbench"]
-# The earlier run's (and the live 8-lead demo's) schema.
-OLD_SCHEMA = re.compile(r"ekg_afib")
-# The first 12-lead run's model and endpoint names (schema ekg_afib): prose may mention them, code may not.
-OLD_MODEL_NAMES = re.compile(r"arr_model_12l|afib_demo_12l")
-SKIP_DIRS = {"tests", ".build", "node_modules", "__dist__", ".venv"}
-# Live resources this demo does not own keep their real (German-spelled) names, and prose may name
-# them: the 8-lead app and its deployed source folder, the earlier run's schema, and the earlier
-# manual deploy of this demo. Everything else is spelled ECG.
-LIVE_RESOURCE_NAMES = re.compile(r"ekg12-demo-mmt|ekg_demo_react_build|ekg-demo|ekg_afib")
+APP_NAME_PATTERN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?")   # lowercase letters, digits, hyphens
+APP_NAME_MAX = 30                                                # Databricks app-name length limit
+SKIP_DIRS = {"tests", ".build", "node_modules", "__dist__", ".venv", ".databricks", "__pycache__",
+             ".pytest_cache", ".apx"}
+TEXT_SUFFIXES = {".py", ".md", ".yml", ".yaml", ".toml", ".json", ".ts", ".tsx", ".html", ".css", ".sh",
+                 ".lock", ".txt"}
 
 
 @pytest.mark.parametrize("module", MIRRORED)
@@ -48,6 +36,13 @@ def test_app_copy_has_only_the_mirrored_modules():
 
 def _bundle():
     return yaml.safe_load((DEMO_ROOT / "databricks.yml").read_text())
+
+
+def _project_files():
+    """Committed-style text files of the project (generated and dependency folders skipped)."""
+    return [p for p in sorted(DEMO_ROOT.rglob("*"))
+            if p.is_file() and (p.suffix in TEXT_SUFFIXES or p.name in {".gitignore", ".python-version"})
+            and not (SKIP_DIRS - {"tests"}) & set(p.relative_to(DEMO_ROOT).parts)]
 
 
 def test_dev_folder_is_never_deployed():
@@ -65,46 +60,84 @@ def test_dev_folder_is_never_deployed():
         assert "signal_variety" not in path.read_text(), path.relative_to(DEMO_ROOT)
 
 
-def test_bundle_defaults_match_config():
+def test_bundle_variables_have_no_workspace_defaults():
+    """The catalog and warehouse are required (no default); the schema defaults to config.SCHEMA;
+    the app name is the generic ecg12-demo; no target names a host or profile."""
     bundle = _bundle()
     assert bundle["bundle"]["name"] == "biosignals-ecg12-afib"
     variables = bundle["variables"]
-    assert variables["catalog"]["default"] == config.CATALOG
+    assert set(variables) == {"catalog", "schema", "warehouse_id", "app_name", "viewer_group"}
+    for required in ("catalog", "warehouse_id"):
+        assert not {"default", "lookup"} & set(variables[required]), required
+        assert variables[required]["description"].startswith("REQUIRED."), required
     assert variables["schema"]["default"] == config.SCHEMA == "biosignals"
-    app = bundle["resources"]["apps"]["ecg12_afib_app"]
-    assert app["source_code_path"] == "./app/.build"       # the bundle's own build folder
-    dev = bundle["targets"]["dev"]
-    assert dev["mode"] == "development"
-    assert dev["workspace"]["profile"] == "fevm-mmt-aws-usw2"
+    app_name = variables["app_name"]["default"]
+    assert app_name == "ecg12-demo"
+    assert APP_NAME_PATTERN.fullmatch(app_name) and len(app_name) <= APP_NAME_MAX
+    assert "workspace-wide" in variables["app_name"]["description"]
+    assert variables["viewer_group"]["default"] == "users"
+    for name, target in bundle["targets"].items():
+        assert target["mode"] == "development", name
+        assert not {"host", "profile"} & set(target.get("workspace") or {}), name
+        assert "variables" not in target, name                  # no target pins a catalog or warehouse
+    assert "workspace" not in bundle
 
 
-def test_app_suffix_is_required_and_rendered_name_never_matches_a_deployed_app():
-    """The user gives only the suffix; the rendered name is always `ecg12-demo-` + that suffix.
-
-    So `--var app_suffix=ekg-demo` renders `ecg12-demo-ekg-demo`, and NO value can render to
-    `ekg-demo` or any other deployed app: a rendered name starts with the prefix, those don't."""
+def test_no_app_target_needs_no_local_build_and_full_adds_the_app():
+    """no_app (default): jobs + dashboard only, deployable from the workspace UI (no artifact build,
+    no app). full: the app with its locally built source, artifact build and environment."""
     bundle = _bundle()
-    assert "app_name" not in bundle["variables"]                        # old variable is gone
-    assert "default" not in bundle["variables"]["app_suffix"]           # never silently defaulted
-    apps = bundle["resources"]["apps"]
-    assert list(apps) == ["ecg12_afib_app"]                             # exactly one app resource
-    assert apps["ecg12_afib_app"]["name"] == APP_TEMPLATE
-    for name, target in bundle["targets"].items():                     # no target swaps the name
-        assert "apps" not in (target.get("resources") or {}), name
-    for path in sorted((DEMO_ROOT / "resources").glob("*.yml")):       # no included file adds one
+    targets = bundle["targets"]
+    assert set(targets) == {"no_app", "full"}
+    assert targets["no_app"].get("default") is True and "default" not in targets["full"]
+    assert "artifacts" not in bundle and "apps" not in (bundle.get("resources") or {})
+    assert not {"artifacts", "resources"} & set(targets["no_app"])
+    assert "app/**" in targets["no_app"]["sync"]["exclude"]
+    for path in sorted((DEMO_ROOT / "resources").glob("*.yml")):        # no included file adds an app
         assert "apps" not in (yaml.safe_load(path.read_text()).get("resources") or {}), path.name
 
-    def render(suffix):
-        return APP_TEMPLATE.replace("${var.app_suffix}", suffix)
+    full = targets["full"]
+    assert full["sync"]["include"] == ["app/.build"]
+    assert full["artifacts"] == {"ecg12_afib_app": {"path": "./app", "build": "./build_from_lockfiles.sh"}}
+    apps = full["resources"]["apps"]
+    assert list(apps) == ["ecg12_afib_app"]
+    app = apps["ecg12_afib_app"]
+    assert app["name"] == "${var.app_name}" and app["source_code_path"] == "./app/.build"
+    # The bundle's command overrides app.yml's; keep them the same.
+    assert app["config"]["command"] == yaml.safe_load((DEMO_ROOT / "app" / "app.yml").read_text())["command"]
+    env = {e["name"]: e["value"] for e in app["config"]["env"]}
+    assert env == {"ECG_DEMO_REACT_CATALOG": "${var.catalog}", "ECG_DEMO_REACT_UC_SCHEMA": "${var.schema}",
+                   "ECG_DEMO_REACT_DASHBOARD_ID": "${resources.dashboards.ecg12_afib_dashboard.id}"}
+    assert app["permissions"] == [{"group_name": "${var.viewer_group}", "level": "CAN_USE"}]
+    # Those env names are the backend's AppConfig fields (env prefix ECG_DEMO_REACT_).
+    app_config = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend" / "core" / "_config.py").read_text()
+    for field in ("catalog: str", "uc_schema: str", "dashboard_id: str | None"):
+        assert f"    {field}" in app_config, field
+    pyproject = (DEMO_ROOT / "app" / "pyproject.toml").read_text()
+    assert 'app-slug = "ecg_demo_react"' in pyproject                        # -> prefix ECG_DEMO_REACT_
 
-    for app in DEPLOYED_APPS:
-        assert not app.startswith(APP_PREFIX), app                      # so no suffix can collide
-        assert render(app) != app                                       # e.g. app_suffix=ekg-demo
-    assert render("ekg-demo") == "ecg12-demo-ekg-demo"
-    assert len(APP_PREFIX) == 11
-    assert render("mmt") == "ecg12-demo-mmt" and len(render("mmt")) == 14  # suggested suffix
-    assert len(render("x" * 19)) == APP_NAME_MAX                        # longest suffix that fits
-    assert len(render("x" * 20)) > APP_NAME_MAX
+
+def test_dashboard_is_a_bundle_resource_on_the_bundle_variables():
+    dashboards = yaml.safe_load((DEMO_ROOT / "resources" / "ecg12_afib.dashboard.yml").read_text())["resources"]["dashboards"]
+    assert list(dashboards) == ["ecg12_afib_dashboard"]
+    dash = dashboards["ecg12_afib_dashboard"]
+    assert (DEMO_ROOT / "resources" / dash["file_path"]).resolve() == DEMO_ROOT / "dashboards" / "ecg12_afib.lvdash.json"
+    assert (dash["warehouse_id"], dash["dataset_catalog"], dash["dataset_schema"]) == (
+        "${var.warehouse_id}", "${var.catalog}", "${var.schema}")
+    assert dash["embed_credentials"] is True and "parent_path" not in dash
+    assert dash["permissions"] == [{"group_name": "${var.viewer_group}", "level": "CAN_READ"}]
+
+
+def test_deploy_script_is_valid_bash_and_reads_endpoint_names_from_config():
+    script = (DEMO_ROOT / "deploy.sh").read_text()
+    subprocess.run(["bash", "-n", str(DEMO_ROOT / "deploy.sh")], check=True)
+    assert script.startswith("#!/usr/bin/env bash") and "set -euo pipefail" in script
+    assert "config.ARR_ENDPOINT, config.AFIB_ENDPOINT" in script
+    assert not {config.ARR_ENDPOINT, config.AFIB_ENDPOINT} & set(re.findall(r"\w+", script))
+    for step in ("bundle validate --strict", "bundle deploy", "bundle run ecg12_afib_setup",
+                 "serving-endpoints update-permissions", "CAN_QUERY", "bundle run ecg12_afib_app",
+                 "aibi-dashboard-embedding-approved-domains"):
+        assert step in script, step
 
 
 def _jobs():
@@ -146,8 +179,8 @@ def test_job_tasks_point_at_existing_notebooks_on_serverless():
             assert (path.parent / task["notebook_task"]["notebook_path"]).is_file()
             assert not {"existing_cluster_id", "new_cluster", "job_cluster_key"} & set(task)
     setup, daily = _jobs()["ecg12_afib_setup"][1], _jobs()["ecg12_afib_daily"][1]
-    # SETUP trains + gates on serverless GPU; DAILY scores with spark_udf, whose Spark workers need
-    # torch: standard serverless with the ML environment (torch CPU build), no GPU.
+    # SETUP trains + gates on serverless GPU; DAILY scores on the driver with standard serverless and
+    # the ML v5 environment (torch CPU build), no GPU.
     assert {e["environment_key"]: e["spec"] for e in setup["environments"]} == {
         "aiv5": {"base_environment": "databricks_ai_v5"}}
     assert {e["environment_key"]: e["spec"] for e in daily["environments"]} == {
@@ -183,98 +216,100 @@ def _yaml_scalars(node):
 
 
 def test_model_and_endpoint_names_come_only_from_config():
-    """No code, job, bundle or app file names a model or endpoint: notebooks, dashboard builder and
-    app read config.ARR_MODEL_NAME / AFIB_MODEL_NAME / *_ENDPOINT. The first 12-lead run's names
-    (arr_model_12l, afib_demo_12l) may appear only in prose (comments, docstrings, markdown)."""
+    """No code, job, bundle or app file names a model or endpoint: notebooks, dashboard builder,
+    deploy script and app read config.ARR_MODEL_NAME / AFIB_MODEL_NAME / *_ENDPOINT."""
     names = {config.ARR_MODEL_NAME, config.AFIB_MODEL_NAME, config.ARR_ENDPOINT, config.AFIB_ENDPOINT}
     assert names == {"bio_ecg12_arr", "bio_ecg12_afib"}                       # each endpoint = its model
     py_files = [p for p in DEMO_ROOT.rglob("*.py") if not SKIP_DIRS & set(p.relative_to(DEMO_ROOT).parts)]
     for path in py_files:
         for literal in _string_literals(path):
-            if literal.startswith(('"""', "'''")):
+            if literal.startswith(('"""', "'''")) or path.name == "config.py":
                 continue                                                     # docstring prose
-            assert not OLD_MODEL_NAMES.search(literal), f"{path.relative_to(DEMO_ROOT)}: {literal[:80]}"
-            if path.name != "config.py":
-                assert not names & set(re.findall(r"\w+", literal)), f"{path.relative_to(DEMO_ROOT)}: {literal[:80]}"
+            assert not names & set(re.findall(r"\w+", literal)), f"{path.relative_to(DEMO_ROOT)}: {literal[:80]}"
     for path in [DEMO_ROOT / "databricks.yml", *sorted((DEMO_ROOT / "resources").glob("*.yml"))]:
         for value in _yaml_scalars(yaml.safe_load(path.read_text())):
-            assert not OLD_MODEL_NAMES.search(value) and not names & set(re.findall(r"\w+", value)), path.name
+            assert not names & set(re.findall(r"\w+", value)), path.name
     ui_sources = [p for p in (APP_COPY.parent.parent / "ui").rglob("*.ts*") if "node_modules" not in p.parts]
     assert ui_sources
     for path in ui_sources:
-        source = path.read_text()
-        assert not OLD_MODEL_NAMES.search(source) and not names & set(re.findall(r"\w+", source)), path.name
+        assert not names & set(re.findall(r"\w+", path.read_text())), path.name
 
 
 def test_no_hardcoded_schema_outside_config():
-    """The UC schema is config.SCHEMA everywhere: no code, job or app file names a schema itself.
-    The earlier run's schema `ekg_afib` may appear only in prose (comments, docstrings, markdown)."""
+    """The UC schema is config.SCHEMA everywhere: no code, job or app file names a schema itself;
+    the bundle's `schema` variable defaults to it."""
     py_files = [p for p in DEMO_ROOT.rglob("*.py") if not SKIP_DIRS & set(p.relative_to(DEMO_ROOT).parts)]
     assert len(py_files) > 15
     for path in py_files:
+        if path.name == "config.py":
+            continue
         for literal in _string_literals(path):
-            if literal.startswith(('"""', "'''")):
-                continue                                                     # docstring prose
-            assert not OLD_SCHEMA.search(literal), f"{path.relative_to(DEMO_ROOT)}: {literal[:80]}"
-            if path.name != "config.py":
+            if not literal.startswith(('"""', "'''")):
                 assert literal.strip("'\"") != config.SCHEMA, f"{path.relative_to(DEMO_ROOT)}: {literal}"
-
     for path in [DEMO_ROOT / "databricks.yml", *sorted((DEMO_ROOT / "resources").glob("*.yml"))]:
         values = _yaml_scalars(yaml.safe_load(path.read_text()))
-        assert not [v for v in values if OLD_SCHEMA.search(v)], path.name
         assert (config.SCHEMA in values) == (path.name == "databricks.yml"), path.name   # bundle default only
     for path in (APP_COPY.parent.parent / "ui").rglob("*.ts*"):
-        source = path.read_text()
-        assert not OLD_SCHEMA.search(source) and f'"{config.SCHEMA}"' not in source, path.name
+        assert f'"{config.SCHEMA}"' not in path.read_text(), path.name
 
 
-def test_ecg_spelling_everywhere_except_live_resource_names():
-    """Docs, code, config and app files spell the demo ECG. The old spelling may appear only as part
-    of a LIVE_RESOURCE_NAMES name. This file is skipped: it defines the check."""
-    generated = {".build", "node_modules", "__dist__", ".venv", ".databricks", ".pytest_cache", "__pycache__"}
-    suffixes = {".py", ".md", ".yml", ".toml", ".json", ".ts", ".tsx", ".html", ".css", ".sh"}
-    repo_root = DEMO_ROOT.parent.parent
-    paths = [repo_root / "README.md"] + [
-        p for p in sorted(DEMO_ROOT.rglob("*"))
-        if p.is_file() and (p.suffix in suffixes or p.name == ".gitignore")
-        and not generated & set(p.relative_to(DEMO_ROOT).parts) and p != Path(__file__).resolve()]
-    assert len(paths) > 60
+# Values that tie a file to one workspace or person. This file is skipped: it defines them.
+WORKSPACE_SPECIFIC = {
+    "workspace host": re.compile(r"https?://[a-z0-9-]+\.(?:cloud\.databricks\.com|azuredatabricks\.net|gcp\.databricks\.com)"),
+    "personal workspace path": re.compile(r"/Users/[^/<\s\"'`]+@"),
+    "Databricks email": re.compile(r"[\w.+-]+@databricks\.com"),
+    "internal package mirror": re.compile(r"(?:pypi|npm)-proxy"),
+    "workspace or dashboard id": re.compile(r"\b(?:\d{15,16}|[0-9a-f]{32})\b"),
+    "old EKG spelling": re.compile(r"ekg", re.IGNORECASE),
+}
+
+
+def test_no_workspace_specific_values_in_committed_files():
+    """No host, personal path, email, internal mirror, workspace / dashboard id or old spelling in any
+    project file, lockfiles included (ids are not checked in lockfiles: their hashes look alike)."""
+    paths = [p for p in _project_files() if p != Path(__file__).resolve()]
+    assert len(paths) > 60 and DEMO_ROOT / "app" / "uv.lock" in paths and DEMO_ROOT / "app" / "bun.lock" in paths
     for path in paths:
         for number, line in enumerate(path.read_text().splitlines(), 1):
-            rest = LIVE_RESOURCE_NAMES.sub("", line).lower()
-            assert "ekg" not in rest, f"{path.relative_to(repo_root)}:{number}: {line.strip()[:100]}"
+            for what, pattern in WORKSPACE_SPECIFIC.items():
+                if what == "workspace or dashboard id" and path.suffix in {".lock", ".json"}:
+                    continue
+                assert not pattern.search(line), f"{what}: {path.relative_to(DEMO_ROOT)}:{number}: {line.strip()[:100]}"
 
 
-def _dashboard(tmp_path, *extra):
-    out = tmp_path / "body.json"
-    builder = DEMO_ROOT / "dashboards" / "build_ecg_demo_dashboard.py"
-    subprocess.run([sys.executable, str(builder), str(out), "--date", "2026-10-29", *extra], check=True,
-                   capture_output=True, text=True)
-    return json.loads(json.loads(out.read_text())["serialized_dashboard"])
+DASHBOARD = DEMO_ROOT / "dashboards" / "ecg12_afib.lvdash.json"
+BUILDER = DEMO_ROOT / "dashboards" / "build_ecg_demo_dashboard.py"
 
 
-def test_dashboard_has_separate_batch_and_live_sections(tmp_path):
-    dashboard = _dashboard(tmp_path)
+def test_committed_dashboard_is_what_the_builder_generates():
+    result = subprocess.run([sys.executable, "-B", str(BUILDER), "--check"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_dashboard_has_separate_batch_and_live_sections_on_bare_tables():
+    dashboard = json.loads(DASHBOARD.read_text())
     sql = {d["name"]: "".join(d["queryLines"]) for d in dashboard["datasets"]}
     batch = {"funnel", "arrivals", "triage_accuracy", "prob_hist", "trend", "afib_by_age", "worklist"}
     live = {"live_requests", "live_predictions"}
     assert set(sql) == batch | live
-    location = f"{config.CATALOG}.{config.SCHEMA}."
+    assert not any({"catalog", "schema"} & set(d) for d in dashboard["datasets"])   # the bundle sets them
+    history, results = config.TRIAGE_HISTORY_TABLE, config.INFERENCE_TABLE
+    payloads = {config.payload_table_name(e) for e in (config.ARR_ENDPOINT, config.AFIB_ENDPOINT)}
+    assert payloads == {"bio_ecg12_arr_payload", "bio_ecg12_afib_payload"}
     for name, query in sql.items():
-        assert location in query and "ekg_afib." not in query, name               # the configured schema
-        assert not re.search(r"dailyOrweekly_arr_afib_inference(?!_12l)", query), name  # never 8-lead
-        assert not re.search(r"\b(batch_data|arr_triaged)_\d{8}\b", query), name
+        tables = set(re.findall(r"\b(?:FROM|JOIN)\s+([\w.`]+)", query))
+        tables.discard("(SELECT")
+        assert tables and all("." not in t for t in tables), (name, tables)      # bare names only
+        assert not re.search(r"_\d{8}\b", query), name                         # no per-date table
         # Batch tiles read only the batch tables; live tiles only the endpoints' payload tables.
-        reads_payload = "_payload" in query
-        assert reads_payload == (name in live), name
-    assert "arr_triaged_12l_20261029" in sql["funnel"] and "acquisition_datetime_utc" in sql["arrivals"]
-    assert "dailyOrweekly_arr_afib_inference_12l" in sql["trend"]
-    assert "mrn" in sql["worklist"] and "batch_date = DATE'2026-10-29'" in sql["worklist"]
-    for endpoint in (config.ARR_ENDPOINT, config.AFIB_ENDPOINT):                   # bio_ecg12_*_payload
-        table = config.payload_table(endpoint)
-        assert table.endswith(("bio_ecg12_arr_payload", "bio_ecg12_afib_payload"))
+        assert tables <= ({history, results} if name in batch else payloads), (name, tables)
+    latest = f"batch_date = (SELECT max(batch_date) FROM {history})"
+    for name in batch - {"trend"}:
+        assert latest in sql[name], name                                         # single-day tiles: latest day
+    assert latest not in sql["trend"] and results in sql["trend"]                # the trend: every day
+    assert "acquisition_datetime_utc" in sql["arrivals"] and "mrn" in sql["worklist"]
+    for table in payloads:
         assert table in sql["live_requests"] and table in sql["live_predictions"]
-    assert not OLD_MODEL_NAMES.search(" ".join(sql.values()))
     # Only the response JSON is parsed; the request JSON (the ECG) is only measured.
     assert "from_json(request" not in sql["live_requests"] + sql["live_predictions"]
     assert "length(request)" in sql["live_requests"]
@@ -288,6 +323,9 @@ def test_dashboard_has_separate_batch_and_live_sections(tmp_path):
                for item in layout if "multilineTextboxSpec" in item["widget"]}
     assert headers["hdr-batch"].startswith("### Batch monitoring") and "endpoints not called" in headers["hdr-batch"]
     assert headers["hdr-live"].startswith("### Live serving") and "_payload" in headers["hdr-live"]
+    # The no-data limitation is stated on the dashboard itself.
+    assert "until the DAILY job has run once" in headers["hdr-batch"]
+    assert "until AI Gateway has delivered the first inference-table logs" in headers["hdr-live"]
     widgets = {item["widget"]["name"]: item for item in layout}
     assert {"triage-bar", "afib-age-bar", "worklist-table", "arrivals-bar", "live-volume", "live-exec",
             "live-arr-prob", "live-afib-prob", "live-table"} <= set(widgets)
@@ -321,8 +359,3 @@ def test_dashboard_has_separate_batch_and_live_sections(tmp_path):
         version = {"counter": 2, "table": 2, "bar": 3, "line": 3}[widget["spec"]["widgetType"]]
         assert widget["spec"]["version"] == version, widget["name"]
     assert datasets_used == set(sql)                                             # no orphan datasets
-
-
-def test_dashboard_location_can_be_overridden(tmp_path):
-    sql = "".join("".join(d["queryLines"]) for d in _dashboard(tmp_path, "--schema", "other")["datasets"])
-    assert f"{config.CATALOG}.other.arr_triaged_12l_20261029" in sql and f".{config.SCHEMA}." not in sql

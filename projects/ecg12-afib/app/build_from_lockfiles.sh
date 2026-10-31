@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Reproducible `apx build`: the same steps apx runs, with every dependency taken from the
-# committed lockfiles (bun.lock, uv.lock). Output: .build/ (wheel + app.yml + requirements.txt).
+# committed lockfiles (bun.lock, uv.lock). Output: .build/ (wheel + app.yml + requirements.txt,
+# which pins every runtime dependency to its locked version and file hash).
 #
 # Why not plain `apx build`? apx 0.3.8 (latest release, commit 50073e5) starts every UI build
 # with `bun add --dev vite @tailwindcss/vite @vitejs/plugin-react @tanstack/router-plugin
@@ -11,12 +12,18 @@
 # "Export named 'SeverityNumber' not found". apx's `uv sync` also re-locks uv.lock whenever the
 # configured package index URL differs from the one recorded in the lock.
 #
+# The lockfiles name only the public registries (pypi.org / files.pythonhosted.org in uv.lock;
+# the default npm registry, an empty URL, in bun.lock). A locally configured mirror still works
+# for the JS side (bun fetches default-registry packages from your configured registry); uv
+# downloads the exact files.pythonhosted.org URLs recorded in uv.lock.
+#
 # Checks (each one fails the build):
 #   1. apx is exactly 0.3.8, the version whose build steps this script copies.
 #   2. The app's copy of the shared modules (src/ecg_demo_react/backend/common/) is
 #      byte-identical to ../common/, the source of truth.
-#   3. The apx UI entrypoint is fetched by full commit SHA and matches its SHA-256.
-#   4. package.json, bun.lock and uv.lock are byte-identical before and after the build.
+#   3. uv.lock and bun.lock point at the public registries only (no private mirror URL).
+#   4. The apx UI entrypoint is fetched by full commit SHA and matches its SHA-256.
+#   5. package.json, bun.lock and uv.lock are byte-identical before and after the build.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -48,6 +55,16 @@ for module in "${SHARED_MODULES[@]}"; do
   fi
 done
 
+# 3. Public registries only. uv.lock: every URL is PyPI's index or file host. bun.lock: every
+# package entry's tarball URL is "" (the default registry), as bun writes it for registry.npmjs.org.
+private_uv=$(grep -Eo 'https://[^/"]+' uv.lock | sort -u | grep -Evx 'https://(pypi\.org|files\.pythonhosted\.org)' || true)
+private_bun=$(grep -Eo '^ +"[^"]+": \["[^"]+", "[^"]+"' bun.lock || true)
+if [[ -n "$private_uv$private_bun" ]]; then
+  echo "ERROR: a lockfile points at a non-public registry; re-lock against pypi.org / registry.npmjs.org:" >&2
+  printf '%s\n' $private_uv "$private_bun" >&2
+  exit 1
+fi
+
 lock_digest() { shasum -a 256 "${LOCKFILES[@]}"; }
 locks_before=$(lock_digest)
 
@@ -55,7 +72,7 @@ export UV_FROZEN=1                  # every `uv sync` apx runs uses uv.lock as-i
 
 apx bun install --frozen-lockfile   # JS deps exactly as in bun.lock
 
-# 3. apx's vite build script; `apx build` writes this same file (embedded in the apx binary).
+# 4. apx's vite build script; `apx build` writes this same file (embedded in the apx binary).
 mkdir -p "$(dirname "$ENTRYPOINT")"
 curl -fsSL -o "$ENTRYPOINT" \
   "https://raw.githubusercontent.com/databricks-solutions/apx/$APX_COMMIT/src/apx/assets/entrypoint.ts"
@@ -71,10 +88,33 @@ NODE_PATH="$PWD/node_modules" APX_APP_NAME="$APP_NAME" \
 # Pass 2: rebuild the wheel so it ships the compiled UI in __dist__/.
 apx build --skip-ui-build
 
-# 4. Lockfiles untouched.
+# Deployed versions = locked versions. apx writes .build/requirements.txt with only the wheel,
+# whose dependencies are ranges (pyproject.toml), so Databricks Apps (`pip install -r
+# requirements.txt`) would resolve them at deploy time. Instead list every runtime dependency
+# from uv.lock with its exact version and file hashes, then the wheel with its own hash: with
+# hashes pip runs in hash-checking mode and installs exactly the locked files or fails.
+wheels=(.build/*.whl)
+if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
+  echo "ERROR: expected exactly one wheel in .build/, found: ${wheels[*]}" >&2
+  exit 1
+fi
+wheel=$(basename "${wheels[0]}")
+if [[ "$(cat .build/requirements.txt)" != "$wheel" ]]; then
+  echo "ERROR: apx wrote an unexpected .build/requirements.txt (expected just $wheel):" >&2
+  cat .build/requirements.txt >&2
+  exit 1
+fi
+uv export --frozen --no-dev --no-emit-project --no-header --no-annotate --format requirements.txt \
+  --output-file .build/requirements.txt.tmp >/dev/null
+printf '%s \\\n    --hash=sha256:%s\n' "$wheel" "$(shasum -a 256 ".build/$wheel" | cut -d ' ' -f 1)" \
+  >> .build/requirements.txt.tmp
+mv .build/requirements.txt.tmp .build/requirements.txt
+
+# 5. Lockfiles untouched.
 if [[ "$(lock_digest)" != "$locks_before" ]]; then
   echo "ERROR: the build changed a lockfile:" >&2
   diff <(echo "$locks_before") <(lock_digest) >&2 || true
   exit 1
 fi
-echo "Build OK: apx $APX_REQUIRED_VERSION, shared modules in sync, lockfiles unchanged."
+echo "Build OK: apx $APX_REQUIRED_VERSION, shared modules in sync, public lockfiles unchanged," \
+     "$(grep -c '==' .build/requirements.txt) locked runtime dependencies pinned in .build/requirements.txt."

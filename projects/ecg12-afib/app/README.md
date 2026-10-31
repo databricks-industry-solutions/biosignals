@@ -20,10 +20,25 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
 ```
 
 The script runs the same steps as `apx build`, but takes every dependency from the committed
-`bun.lock` / `uv.lock`, so the build reproduces the live `ekg-demo` app's versions. It fails
-unless `apx --version` is exactly 0.3.8, fetches apx's UI entrypoint by full commit SHA and checks
-its SHA-256, checks the `backend/common/` copy, and fails if `package.json`, `bun.lock` or
-`uv.lock` changed during the build.
+`bun.lock` / `uv.lock`, so every build uses the same versions. It fails unless `apx --version` is
+exactly 0.3.8, checks the `backend/common/` copy, checks that both lockfiles point only at the
+public registries (PyPI and npm), fetches apx's UI entrypoint by full commit SHA and checks its
+SHA-256, and fails if `package.json`, `bun.lock` or `uv.lock` changed during the build.
+
+**Deployed versions = locked versions.** `apx build` writes a `.build/requirements.txt` that lists
+only the app wheel, whose dependencies are version ranges, so Databricks Apps would pick the
+versions at deploy time. The script rewrites it from `uv.lock` (`uv export`): every runtime
+dependency with its exact version and file hashes, then the wheel with its hash. Databricks Apps
+installs `requirements.txt` with pip, which in hash-checking mode installs exactly those files or
+fails.
+
+**Registries.** The lockfiles record PyPI (`pypi.org`, `files.pythonhosted.org`) and the default
+npm registry. bun fetches default-registry packages from whatever npm registry you have
+configured; uv downloads the `files.pythonhosted.org` URLs in `uv.lock` as they are. To change a
+dependency, edit `pyproject.toml` / `package.json`, re-lock against the public registries
+(`uv lock --default-index https://pypi.org/simple`; `apx bun install` with the default npm
+registry configured), and commit the lockfiles. A lock written through a mirror records the
+mirror's URLs, and the build refuses it.
 
 **Why not plain `apx build`?** apx 0.3.8 starts every UI build with an unversioned
 `bun add --dev` of nine build tools (vite, the TanStack router plugin, Tailwind's vite plugin,

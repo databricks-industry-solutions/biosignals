@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.119.0",
+    "pydantic>=2.13",
     "pydantic-settings>=2.11.0",
+    "python-dotenv>=1.2",
+    "starlette>=1.2",
     "uvicorn>=0.37.0",
     "databricks-sdk>=0.74.0",
     # ECG generation (server-side) — pin numpy<2 to avoid the neurokit2 ABI break (pandas/pyarrow).

@@ -338,11 +338,12 @@ dev/tests/run_tests_python311.sh dev/tests/test_scoring_and_io.py -v   # one fil
 
 ## Future work
 
-**Spark-worker batch scoring.** `common/scoring.py` also has `score_spark_udf`, which scores on the
-Spark workers with `mlflow.pyfunc.spark_udf` instead of the driver, for batches larger than one
-day's ~100 ECGs. No job uses it. On standard serverless the workers need the model's own
-environment (`env_manager="uv"`) with PyTorch's CPU wheels; its one try failed on uv's index
-strategy (uv took `setuptools` from the CPU torch index, which lacks the pinned version), which
+**Bulk inference.** The DAILY job scores one day's ~100 ECGs on the driver. Larger backlogs need
+the scoring spread over workers, for example with Spark (`mlflow.pyfunc.spark_udf`) or Ray; both
+are open to explore. A Spark starting point exists: `score_spark_udf` in `common/scoring.py`,
+tested locally only and used by no job. Its one try on standard serverless, where the workers need
+the model's own environment (`env_manager="uv"`) with PyTorch's CPU wheels, failed on uv's index
+strategy (uv took `setuptools` from the CPU torch index, which lacks the pinned version); that
 looks fixable, but the path is untested on Databricks.
 
 **Other ECG classifiers.** Models that classify other ECG patterns (other rhythms, conduction

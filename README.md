@@ -99,3 +99,5 @@ Each project lists its packages, versions, licenses and source links in its own 
 | Project | Package licenses |
 |---|---|
 | `ecg12-afib` | [projects/ecg12-afib/docs/third-party-licenses.md](projects/ecg12-afib/docs/third-party-licenses.md) |
+
+Repository tooling (not shipped): the Pages build uses [`nh3`](https://github.com/messense/nh3) 0.3.7 (MIT) to sanitize rendered HTML.

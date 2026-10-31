@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..._metadata import app_name, app_slug
@@ -33,10 +33,18 @@ class AppConfig(BaseSettings):
     # embeds. The bundle's `full` target sets them (databricks.yml, resources.apps.*.config.env)
     # from its `catalog` / `schema` variables and the id of the dashboard it deploys, as
     # ECG_DEMO_REACT_CATALOG, ECG_DEMO_REACT_UC_SCHEMA and ECG_DEMO_REACT_DASHBOARD_ID. The catalog
-    # has no default, so the app fails at startup without it; no dashboard id = no embed.
-    catalog: str
+    # has no usable default, so the app fails at startup without it; no dashboard id = no embed.
+    catalog: str = Field(default="", validate_default=True)
     uc_schema: str = Field(default=SCHEMA)
     dashboard_id: str | None = None
+
+    @field_validator("catalog")
+    @classmethod
+    def _catalog_is_set(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError(f"{app_slug.upper()}_CATALOG is not set: the bundle's full target sets it "
+                             "from the `catalog` variable (databricks.yml)")
+        return value.strip()
 
     @property
     def static_assets_path(self) -> Path:

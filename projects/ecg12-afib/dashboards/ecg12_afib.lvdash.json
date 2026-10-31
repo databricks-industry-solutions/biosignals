@@ -73,9 +73,9 @@
       "name": "live_requests",
       "displayName": "Live: endpoint requests (AI Gateway inference tables)",
       "queryLines": [
-        "SELECT 'bio_ecg12_arr (triage)' AS endpoint, databricks_request_id, request_time, date_trunc('HOUR', request_time) AS request_hour, status_code, execution_duration_ms, ROUND(length(request) / 1024.0, 0) AS request_kb, CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged FROM bio_ecg12_arr_payload ",
+        "SELECT 'bio_ecg12_arr (triage)' AS endpoint, databricks_request_id, request_time, date_trunc('HOUR', request_time) AS request_hour, status_code, execution_duration_ms, ROUND(length(request) / 1024.0, 0) AS request_kb, CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged FROM bio_ecg12_arr_payload WHERE client_request_id IS DISTINCT FROM 'app-warmup' ",
         "UNION ALL ",
-        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time, date_trunc('HOUR', request_time) AS request_hour, status_code, execution_duration_ms, ROUND(length(request) / 1024.0, 0) AS request_kb, CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged FROM bio_ecg12_afib_payload ",
+        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time, date_trunc('HOUR', request_time) AS request_hour, status_code, execution_duration_ms, ROUND(length(request) / 1024.0, 0) AS request_kb, CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged FROM bio_ecg12_afib_payload WHERE client_request_id IS DISTINCT FROM 'app-warmup' ",
         "ORDER BY request_time DESC"
       ]
     },
@@ -85,11 +85,20 @@
       "queryLines": [
         "SELECT 'bio_ecg12_arr (triage)' AS endpoint, request_time, p.arr_prob AS score, ROUND(p.arr_prob, 1) AS score_bin ",
         "FROM (SELECT request_time, explode(from_json(response, 'predictions ARRAY<STRUCT<arr_prob: DOUBLE, arr_flag: DOUBLE>>').predictions) AS p ",
-        "FROM bio_ecg12_arr_payload WHERE status_code = 200 AND response IS NOT NULL) ",
+        "FROM bio_ecg12_arr_payload WHERE status_code = 200 AND response IS NOT NULL AND client_request_id IS DISTINCT FROM 'app-warmup') ",
         "UNION ALL ",
         "SELECT 'bio_ecg12_afib (classify)' AS endpoint, request_time, p[1] AS score, ROUND(p[1], 1) AS score_bin ",
         "FROM (SELECT request_time, explode(from_json(response, 'predictions ARRAY<ARRAY<DOUBLE>>').predictions) AS p ",
-        "FROM bio_ecg12_afib_payload WHERE status_code = 200 AND response IS NOT NULL)"
+        "FROM bio_ecg12_afib_payload WHERE status_code = 200 AND response IS NOT NULL AND client_request_id IS DISTINCT FROM 'app-warmup')"
+      ]
+    },
+    {
+      "name": "live_warmups",
+      "displayName": "Live: app warm-up pings",
+      "queryLines": [
+        "SELECT 'bio_ecg12_arr (triage)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_arr_payload WHERE client_request_id = 'app-warmup' ",
+        "UNION ALL ",
+        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_afib_payload WHERE client_request_id = 'app-warmup'"
       ]
     }
   ],
@@ -758,7 +767,7 @@
               "lines": [
                 "### Live serving — the app (endpoint calls logged by AI Gateway)\n",
                 "\n",
-                "Sources: `bio_ecg12_arr_payload` and `bio_ecg12_afib_payload`, the endpoints' inference tables. Each *Triage → Classify* click in the app adds a row to the triage table, and one to the classify table when the ECG is flagged. Batch scoring never appears here. Execution time is the model's inference time only (no network overhead). **These tiles show an error until AI Gateway has delivered the first inference-table logs** (best effort, typically within about an hour of the first app request): until then the tables have no columns but `databricks_request_id`."
+                "Sources: `bio_ecg12_arr_payload` and `bio_ecg12_afib_payload`, the endpoints' inference tables. Each *Triage → Classify* click in the app adds a row to the triage table, and one to the classify table when the ECG is flagged. Batch scoring never appears here. Execution time is the model's inference time only (no network overhead). The app's warm-up pings, which keep the scale-to-zero endpoints awake while its Live tab is open, are left out and only counted. **These tiles show an error until AI Gateway has delivered the first inference-table logs** (best effort, typically within about an hour of the first app request): until then the tables have no columns but `databricks_request_id`."
               ]
             }
           },
@@ -812,7 +821,7 @@
           "position": {
             "x": 0,
             "y": 34,
-            "width": 4,
+            "width": 3,
             "height": 4
           }
         },
@@ -864,9 +873,9 @@
             }
           },
           "position": {
-            "x": 4,
+            "x": 3,
             "y": 34,
-            "width": 4,
+            "width": 3,
             "height": 4
           }
         },
@@ -904,9 +913,49 @@
             }
           },
           "position": {
-            "x": 8,
+            "x": 6,
             "y": 34,
-            "width": 4,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-warmups",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_warmups",
+                  "fields": [
+                    {
+                      "name": "count(databricks_request_id)",
+                      "expression": "COUNT(`databricks_request_id`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(databricks_request_id)",
+                  "displayName": "App warm-up pings (not counted above)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "App warm-up pings (not counted above)"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 34,
+            "width": 3,
             "height": 4
           }
         },

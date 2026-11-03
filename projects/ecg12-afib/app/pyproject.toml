@@ -3,6 +3,8 @@ name = "ecg-demo-react"
 dynamic = ["version"]
 description = "ECG/AFib 12-lead demo app (APX: React + FastAPI)"
 readme = "README.md"
+# Databricks License: see LICENSE.md at the repository root (PEP 639 license-files paths can't use "..").
+license = "LicenseRef-Databricks"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.119.0",

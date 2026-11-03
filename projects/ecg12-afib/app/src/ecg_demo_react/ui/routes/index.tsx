@@ -49,12 +49,12 @@ type Links = ReturnType<typeof buildLinks>;
 
 const LINK_CLS = "font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900";
 
-/** External link; plain text until the app config (and so the URL) has loaded. */
+/** External link; without a URL (app config not loaded, or no dashboard configured) the same text and style, unlinked. */
 function Ext({ href, className = LINK_CLS, children }: { href?: string; className?: string; children: ReactNode }) {
   return href ? (
     <a href={href} target="_blank" rel="noreferrer" className={className}>{children}</a>
   ) : (
-    <span>{children}</span>
+    <span className={className}>{children}</span>
   );
 }
 

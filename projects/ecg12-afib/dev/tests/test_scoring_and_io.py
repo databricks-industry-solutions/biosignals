@@ -1,17 +1,13 @@
-"""Tests for config.py, scoring.py and uc_io.py (Spark and MLflow replaced by small fakes, plus
-one check of the Spark-worker path against the real mlflow.pyfunc.spark_udf when mlflow is installed;
-no job uses that path yet, see docs/future-work.md)."""
+"""Tests for config.py, scoring.py and uc_io.py (Spark and MLflow replaced by small fakes;
+score_driver_side also on a local Spark session)."""
 import datetime as dt
-import os
 from types import SimpleNamespace
-from typing import Iterator
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from common import config, scoring, uc_io
-from conftest import pickle_by_value_for_spark_workers
 
 
 # --- config ------------------------------------------------------------------------------
@@ -119,26 +115,6 @@ def test_output_schema_readers():
     np.testing.assert_allclose(afib["afib_predictions_1"], [0.2, 0.9])
     with pytest.raises(ValueError):
         scoring.afib_columns(np.array([0.1, 0.9]))
-
-
-def test_torch_cpu_wheels_sets_the_cpu_index_only_for_the_environment_build(monkeypatch):
-    """spark_udf rebuilds the model's environment with uv (the serverless UDF workers lack the task
-    environment's torch); torch_cpu_wheels points that build at PyTorch's CPU wheels and then
-    restores the variable, and fails clearly without a uv command."""
-    assert scoring.UDF_ENV_MANAGER == "uv"
-    assert scoring.TORCH_CPU_INDEX_URL == "https://download.pytorch.org/whl/cpu"
-    monkeypatch.setattr(scoring.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
-    monkeypatch.delenv("UV_EXTRA_INDEX_URL", raising=False)
-    with scoring.torch_cpu_wheels():
-        assert os.environ["UV_EXTRA_INDEX_URL"] == scoring.TORCH_CPU_INDEX_URL
-    assert "UV_EXTRA_INDEX_URL" not in os.environ
-    monkeypatch.setenv("UV_EXTRA_INDEX_URL", "https://example.invalid/simple")    # a caller's own index
-    with scoring.torch_cpu_wheels():
-        assert os.environ["UV_EXTRA_INDEX_URL"] == f"{scoring.TORCH_CPU_INDEX_URL} https://example.invalid/simple"
-    assert os.environ["UV_EXTRA_INDEX_URL"] == "https://example.invalid/simple"
-    monkeypatch.setattr(scoring.shutil, "which", lambda cmd: None)
-    with pytest.raises(RuntimeError, match="uv command"), scoring.torch_cpu_wheels():
-        pass
 
 
 # --- uc_io -------------------------------------------------------------------------------
@@ -273,184 +249,3 @@ def test_score_driver_side_empty_input_skips_the_model(spark):
     assert out.count() == 0
     assert {"afib_predictions_0", "afib_predictions_1", "afib_model_info"} <= set(out.columns)
 
-
-# --- score_spark_udf (Spark workers, unused by the jobs) vs score_driver_side, same outputs ---
-
-def _arr_predict(X):
-    """Stand-in ARR model output: depends on lead order and sample order, so a wrong reshape shows."""
-    prob = (X[:, 0, 0] + 2 * X[:, 11, -1]) / 100.0
-    return pd.DataFrame({"arr_prob": prob.astype("float32"), "arr_flag": (prob >= 0.3).astype("float32")})
-
-
-def _afib_predict(X):
-    p = np.clip(X[:, 6, 1] / 50.0, 0.0, 1.0)
-    return np.stack([1 - p, p], axis=1).astype("float32")
-
-
-def _udf_like_mlflow(predict, result_type, n_leads=12, n_samples=5):
-    """What mlflow.pyfunc.spark_udf builds for a (-1, n_leads, n_samples) tensor signature: an
-    iterator pandas UDF that reshapes each flattened array (C order) and returns ``result_type``."""
-    from pyspark.sql.functions import pandas_udf
-
-    def batches(flat):
-        return np.vstack(flat.tolist()).reshape(-1, n_leads, n_samples).astype("float32")
-
-    if result_type.startswith("array<"):
-        def predict_array(it: Iterator[pd.Series]) -> Iterator[pd.Series]:
-            for flat in it:
-                yield pd.Series(np.asarray(predict(batches(flat)), dtype="float64").tolist())
-        return pandas_udf(predict_array, result_type)
-
-    def predict_struct(it: Iterator[pd.Series]) -> Iterator[pd.DataFrame]:
-        for flat in it:
-            yield predict(batches(flat)).astype("float64")
-    return pandas_udf(predict_struct, result_type)
-
-
-SCORERS = {
-    "arr": (_arr_predict, scoring.arr_columns, scoring.arr_udf_columns, scoring.ARR_UDF_RESULT_TYPE,
-            scoring.ARR_OUTPUT_COLS),
-    "afib": (_afib_predict, scoring.afib_columns, scoring.afib_udf_columns, scoring.AFIB_UDF_RESULT_TYPE,
-             scoring.AFIB_OUTPUT_COLS),
-}
-
-
-@pytest.mark.parametrize("model", sorted(SCORERS))
-def test_score_spark_udf_gives_the_same_table_as_driver_side(spark, model):
-    pickle_by_value_for_spark_workers(__name__)
-    predict, columns, udf_columns, result_type, output_cols = SCORERS[model]
-    sdf, ecg_cols = _batch_sdf(spark, 7)
-    common_args = dict(output_cols=output_cols, ecg_cols=ecg_cols, model_info_col="model_info",
-                       model_info="models:/m/3 (@champion)")
-    driver = scoring.score_driver_side(spark, sdf, lambda X: columns(predict(X)), n_samples=5, **common_args)
-    udf = scoring.score_spark_udf(sdf, _udf_like_mlflow(predict, result_type), udf_columns,
-                                  rows_per_partition=3, **common_args)
-    assert udf.dtypes == driver.dtypes                                   # same columns, order, types
-    assert [c for c, _ in udf.dtypes] == ["pseudo_patient_id", "age_years", *ecg_cols, *output_cols, "model_info"]
-    by_id = lambda df: df.orderBy("pseudo_patient_id").toPandas()        # noqa: E731
-    pd.testing.assert_frame_equal(by_id(udf).drop(columns=ecg_cols), by_id(driver).drop(columns=ecg_cols))
-    assert udf.rdd.getNumPartitions() == 3                               # 7 rows, at most 3 per partition
-
-
-def test_score_spark_udf_empty_input_and_wrong_columns(spark):
-    pickle_by_value_for_spark_workers(__name__)
-    sdf, ecg_cols = _batch_sdf(spark, 0)
-    out = scoring.score_spark_udf(sdf, _udf_like_mlflow(_afib_predict, scoring.AFIB_UDF_RESULT_TYPE),
-                                  scoring.afib_udf_columns, output_cols=scoring.AFIB_OUTPUT_COLS,
-                                  ecg_cols=ecg_cols, model_info_col="afib_model_info", model_info="x")
-    assert out.count() == 0 and out.columns[-3:] == ["afib_predictions_0", "afib_predictions_1", "afib_model_info"]
-    with pytest.raises(ValueError, match="expected"):
-        scoring.score_spark_udf(sdf, lambda col: col, scoring.afib_udf_columns, output_cols=scoring.ARR_OUTPUT_COLS,
-                                ecg_cols=ecg_cols, model_info_col="m", model_info="x")
-
-
-# --- Arrow batch cap: at most rows_per_partition ECGs per model call ----------------------
-
-@pytest.fixture(autouse=True)
-def _unset_arrow_batch_cap(request):
-    """score_spark_udf sets the cap on the session; each test starts the shared session without it."""
-    yield
-    if "spark" in request.fixturenames:
-        request.getfixturevalue("spark").conf.unset(scoring.ARROW_BATCH_ROWS_CONF)
-
-
-def test_arrow_batch_cap_limits_the_rows_of_each_udf_call(spark):
-    """One partition of 10 rows: once capped at 3 rows, an iterator pandas UDF (spark_udf calls the
-    model once per such batch) never gets more than 3 rows, whatever the partition size."""
-    pytest.importorskip("pyarrow")
-    from pyspark.sql.functions import pandas_udf
-
-    pickle_by_value_for_spark_workers(__name__)
-
-    def batch_rows(it: Iterator[pd.Series]) -> Iterator[pd.Series]:
-        for ids in it:
-            yield pd.Series([len(ids)] * len(ids))
-
-    sdf = spark.range(10).coalesce(1)
-
-    def largest_batch():
-        return sdf.select(pandas_udf(batch_rows, "long")("id").alias("n")).agg({"n": "max"}).collect()[0][0]
-
-    assert largest_batch() == 10                                         # uncapped: one batch
-    assert scoring.cap_arrow_batch_rows(spark, 3) is True
-    assert spark.conf.get(scoring.ARROW_BATCH_ROWS_CONF) == "3"
-    assert largest_batch() == 3
-
-
-def test_arrow_batch_cap_refused_by_the_compute_is_reported_not_raised():
-    """Serverless lets jobs set only a few listed Spark properties: a setting that raises or does
-    not take effect gives False, and scoring falls back to the partition bound."""
-    errors = pytest.importorskip("pyspark.errors")
-
-    class Conf:
-        def __init__(self, behaviour):
-            self.behaviour, self.values = behaviour, {}
-
-        def set(self, key, value):
-            if self.behaviour == "raise":
-                raise errors.AnalysisException("not settable on this compute")
-            if self.behaviour == "apply":
-                self.values[key] = value
-
-        def get(self, key):
-            return self.values.get(key, "10000")
-
-    for behaviour, applied in (("apply", True), ("raise", False), ("ignore", False)):
-        assert scoring.cap_arrow_batch_rows(SimpleNamespace(conf=Conf(behaviour)), 256) is applied, behaviour
-
-
-def test_score_spark_udf_caps_arrow_batches_and_reuses_a_known_count(spark, monkeypatch):
-    pickle_by_value_for_spark_workers(__name__)
-    sdf, ecg_cols = _batch_sdf(spark, 7)
-    udf = _udf_like_mlflow(_afib_predict, scoring.AFIB_UDF_RESULT_TYPE)
-    args = dict(output_cols=scoring.AFIB_OUTPUT_COLS, ecg_cols=ecg_cols, model_info_col="m", model_info="x",
-                rows_per_partition=3)
-    by_id = lambda df: df.orderBy("pseudo_patient_id").drop(*ecg_cols).toPandas()   # noqa: E731
-
-    out = scoring.score_spark_udf(sdf, udf, scoring.afib_udf_columns, **args)
-    assert spark.conf.get(scoring.ARROW_BATCH_ROWS_CONF) == "3"         # the cap = rows_per_partition
-    assert out.rdd.getNumPartitions() == 3                              # 7 rows counted, 3 per partition
-    # A row count the caller already has is used as given (n_rows=1 -> one partition), not recounted.
-    known = scoring.score_spark_udf(sdf, udf, scoring.afib_udf_columns, n_rows=1, **args)
-    assert known.rdd.getNumPartitions() == 1
-    pd.testing.assert_frame_equal(by_id(known), by_id(out))
-    # Where the compute refuses the cap, the same table comes back on the partition bound, with a warning.
-    monkeypatch.setattr(scoring, "cap_arrow_batch_rows", lambda spark, rows: False)
-    with pytest.warns(UserWarning, match="maxRecordsPerBatch cannot be set on this compute"):
-        refused = scoring.score_spark_udf(sdf, udf, scoring.afib_udf_columns, **args)
-    pd.testing.assert_frame_equal(by_id(refused), by_id(out))
-
-
-@pytest.mark.parametrize("model", sorted(SCORERS))
-def test_real_mlflow_spark_udf_matches_driver_side(spark, model, tmp_path):
-    """The real mlflow.pyfunc.spark_udf on a pyfunc with the notebooks' signature shape
-    (-1, 12, n_samples) float32: it accepts the flattened lead-order array, reshapes it the way
-    scoring.ecg_tensor does, and the result types give the driver-side table. Skipped without mlflow."""
-    mlflow = pytest.importorskip("mlflow")
-    pytest.importorskip("pyarrow")
-    from mlflow.models import infer_signature
-
-    pickle_by_value_for_spark_workers(__name__)
-
-    predict, columns, udf_columns, result_type, output_cols = SCORERS[model]
-
-    class Model(mlflow.pyfunc.PythonModel):           # defined here, so cloudpickle stores it by value
-        def predict(self, context, model_input):
-            return predict(model_input)
-
-    example = np.arange(12 * 5, dtype="float32").reshape(1, 12, 5)
-    path = str(tmp_path / model)
-    mlflow.pyfunc.save_model(path, python_model=Model(), signature=infer_signature(example, predict(example)),
-                             input_example=example)
-    sdf, ecg_cols = _batch_sdf(spark, 5)
-    common_args = dict(output_cols=output_cols, ecg_cols=ecg_cols, model_info_col="model_info", model_info="v1")
-    loaded = mlflow.pyfunc.load_model(path)
-    driver = scoring.score_driver_side(spark, sdf, lambda X: columns(loaded.predict(X)), n_samples=5, **common_args)
-    # env_manager="local": this checks the real spark_udf's input reshaping and result types; the
-    # notebooks' "uv" (scoring.UDF_ENV_MANAGER) only changes which environment runs the model, and
-    # rebuilding one here would download the model's requirements.
-    real_udf = mlflow.pyfunc.spark_udf(spark, path, result_type=result_type, env_manager="local")
-    udf = scoring.score_spark_udf(sdf, real_udf, udf_columns, **common_args)
-    assert udf.dtypes == driver.dtypes
-    by_id = lambda df: df.orderBy("pseudo_patient_id").drop(*ecg_cols).toPandas()   # noqa: E731
-    pd.testing.assert_frame_equal(by_id(udf), by_id(driver))

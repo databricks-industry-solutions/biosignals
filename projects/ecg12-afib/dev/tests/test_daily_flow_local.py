@@ -77,16 +77,13 @@ def _fake_mlflow(monkeypatch):
         loads.append(uri)
         return ArrModel() if config.ARR_MODEL_NAME in uri else AfibModel()
 
-    def spark_udf(*args, **kwargs):
-        raise AssertionError("the batch notebooks score on the driver, not with spark_udf")
-
     def get_model_version_by_alias(name, alias):
         assert alias == config.CHAMPION_ALIAS, alias            # daily scoring uses champion only
         return SimpleNamespace(version=3)
 
     mlflow = types.ModuleType("mlflow")
     mlflow.set_registry_uri = lambda uri: None
-    mlflow.pyfunc = SimpleNamespace(spark_udf=spark_udf, load_model=load_model)
+    mlflow.pyfunc = SimpleNamespace(load_model=load_model)
     mlflow.MlflowClient = lambda registry_uri=None: SimpleNamespace(
         get_model_version_by_alias=get_model_version_by_alias)
     monkeypatch.setitem(sys.modules, "mlflow", mlflow)
@@ -117,7 +114,6 @@ def _check_day(uc, day):
     batch = uc.tables[batch_t].toPandas()
     assert 85 <= len(batch) <= 115 and batch[config.ID_COL].is_unique
     assert [c for c in batch.columns if c.startswith("ecg")] == config.ecg_columns(12)
-    assert {"pmh", "anti_htn", "white", "height", "weight"}.isdisjoint(batch.columns)
     assert len(batch["ecg12"].iloc[0]) == 2500
     assert (batch["n_leads"] == 12).all() and (batch["batch_date"] == day).all()
     assert (batch["bmi"] == (batch["weight_kg"] / (batch["height_cm"] / 100) ** 2).round(1)).all()

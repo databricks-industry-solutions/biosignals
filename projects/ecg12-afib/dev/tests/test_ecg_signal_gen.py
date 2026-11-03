@@ -8,7 +8,7 @@ from scipy.signal import find_peaks
 
 from common import config
 from common.ecg_signal_gen import (
-    AFIB, DERIVED_LEADS, HEART_RATE_RANGE_BPM, INDEPENDENT_LEADS, LABEL_NAMES, LEADS_12, N_SAMPLES,
+    AFIB, DERIVED_LEADS, HEART_RATE_RANGE_BPM, LABEL_NAMES, LEADS_12, N_SAMPLES,
     NSR, OTHER, SAMPLING_RATE, derive_limb_leads, generate_ecg_batch, lead_names_for, synthesize_ecgs,
 )
 
@@ -53,15 +53,6 @@ def test_derive_limb_leads_formulas():
     np.testing.assert_allclose(d["aVR"], [-0.75, -0.6, -0.2])
     np.testing.assert_allclose(d["aVL"], [0.75, -0.3, -0.8])
     np.testing.assert_allclose(d["aVF"], [0.0, 0.9, 1.0])
-
-
-def test_n_leads_8_gives_the_recorded_leads_of_the_12_lead_signal():
-    b12 = generate_ecg_batch(5, seed=11, n_leads=12)
-    b8 = generate_ecg_batch(5, seed=11, n_leads=8)
-    assert b8.lead_names == INDEPENDENT_LEADS
-    assert b8.ecg.shape == (5, 8, N_SAMPLES)
-    np.testing.assert_array_equal(b8.ecg, b12.ecg[:, [LEADS_12.index(n) for n in INDEPENDENT_LEADS], :])
-    np.testing.assert_array_equal(b8.labels, b12.labels)
 
 
 def test_unsupported_lead_count_is_rejected():

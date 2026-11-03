@@ -62,8 +62,6 @@ _HEART_RATE_CENTER_BPM = {NSR: (74.0, 9.0), AFIB: (124.0, 14.0), OTHER: (130.0, 
 LEADS_12 = ("I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6")
 INDEPENDENT_LEADS = ("I", "II", "V1", "V2", "V3", "V4", "V5", "V6")
 DERIVED_LEADS = ("III", "aVR", "aVL", "aVF")
-# n_leads -> lead set. 8 = the independently recorded leads (the legacy channel count).
-LEAD_SETS = {12: LEADS_12, 8: INDEPENDENT_LEADS}
 
 # Waves of the beat model, in column order of the amplitude matrices below.
 _WAVES = ("P", "Q", "R", "S", "T")
@@ -98,11 +96,10 @@ class EcgBatch(NamedTuple):
 
 
 def lead_names_for(n_leads: int = N_LEADS) -> tuple[str, ...]:
-    """Lead names (and stored-column order) for ``n_leads``; see ``LEAD_SETS``."""
-    try:
-        return LEAD_SETS[n_leads]
-    except KeyError:
-        raise ValueError(f"n_leads={n_leads} not supported; choose one of {sorted(LEAD_SETS)}") from None
+    """Lead names (and stored-column order) for ``n_leads``: ``LEADS_12``, the only lead set."""
+    if n_leads != len(LEADS_12):
+        raise ValueError(f"n_leads={n_leads} not supported; the generator gives all {len(LEADS_12)} leads")
+    return LEADS_12
 
 
 # How each derived lead is computed from I and II (as text; derive_limb_leads computes it).
@@ -172,12 +169,11 @@ def synthesize_ecgs(
     unknown = set(np.unique(labels).tolist()) - set(LABEL_NAMES)
     if unknown:
         raise ValueError(f"unknown rhythm labels {sorted(unknown)}; expected {sorted(LABEL_NAMES)}")
-    pick = [LEADS_12.index(name) for name in names]
     ecg = np.empty((labels.shape[0], len(names), N_SAMPLES), dtype=np.float32)
     heart_rate = np.empty(labels.shape[0], dtype=int)
     for i, label in enumerate(labels):
         leads12, heart_rate[i] = _synthesize_one(int(label), rng, noise_level)
-        ecg[i] = leads12[pick].astype(np.float32)
+        ecg[i] = leads12.astype(np.float32)
     return EcgBatch(ecg=ecg, labels=labels, heart_rate_bpm=heart_rate, lead_names=names)
 
 

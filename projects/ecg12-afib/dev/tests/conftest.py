@@ -4,14 +4,13 @@
 * Selects matplotlib's non-interactive Agg backend, so the notebooks' plots render off-screen.
 * ``spark``: a local Spark session for the tests that need one; skipped when only
   Databricks Connect (no local Spark) or no Java runtime is installed.
-* ``pickle_by_value_for_spark_workers``: lets a test module ship its own functions to the Spark
-  worker processes (UDFs), which cannot import the tests folder.
 * ``GOVERNED_TAG_VALUES``: the only values the notebooks may write for tag keys that a Unity
   Catalog tag policy may restrict.
 * ``TEST_CATALOG``: the catalog the tests pass as the (required) ``catalog_name`` parameter.
 
-Python 3.11: the Spark tests need it (pyspark 3.5.3 pickles UDFs with its bundled cloudpickle
-2.2.1, which predates Python 3.12 support); see README.md (this folder) and run_tests_python311.sh.
+Python 3.11: the Spark tests need it (pyspark 3.5.3 pickles the functions it sends to its workers
+with its bundled cloudpickle 2.2.1, which predates Python 3.12 support); see README.md (this folder)
+and run_tests_python311.sh.
 """
 import os
 import sys
@@ -52,19 +51,3 @@ def spark():
         pytest.skip(f"local Spark unavailable: {exc}")
     yield session
     session.stop()
-
-
-def pickle_by_value_for_spark_workers(module_name):
-    """Make cloudpickle pickle the functions and classes of test module ``module_name`` by value,
-    both pyspark's bundled copy (UDFs) and the standalone one MLflow uses to save a pyfunc model,
-    when installed. Spark's Python workers cannot import the tests folder, so a pickled reference
-    to the test module would fail to load there."""
-    from pyspark import cloudpickle as pyspark_cloudpickle
-
-    module = sys.modules[module_name]
-    pyspark_cloudpickle.register_pickle_by_value(module)
-    try:
-        import cloudpickle
-    except ImportError:
-        return
-    cloudpickle.register_pickle_by_value(module)

@@ -114,9 +114,6 @@ def test_showcase_plots():
     twelve = ecg_plots.twelve_lead(batch.ecg[0], batch.lead_names, int(batch.labels[0]))
     labels = [t.get_text() for ax in twelve.axes if ax.get_visible() for t in ax.texts]
     assert len(labels) == 12 and sum(lab.endswith("(derived)") for lab in labels) == 4
-    eight = training_data.generate_splits({"x": (3, 5)}, frac_afib=1 / 3, frac_other=1 / 3, noise_level=0.0,
-                                          n_leads=8)["x"]
-    assert sum(ax.get_visible() for ax in ecg_plots.twelve_lead(eight.ecg[0], eight.lead_names, NSR).axes) == 8
     with pytest.raises(ValueError):
         ecg_plots.rhythm_strips(batch.ecg[:0], batch.labels[:0], batch.lead_names)
     plt.close("all")

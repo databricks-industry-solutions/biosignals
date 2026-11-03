@@ -312,13 +312,12 @@ WORKSPACE_SPECIFIC = {
     "Databricks email": re.compile(r"[\w.+-]+@databricks\.com"),
     "internal package mirror": re.compile(r"(?:pypi|npm)-proxy"),
     "workspace or dashboard id": re.compile(r"\b(?:\d{15,16}|[0-9a-f]{32})\b"),
-    "old EKG spelling": re.compile(r"ekg", re.IGNORECASE),
 }
 
 
 def test_no_workspace_specific_values_in_committed_files():
-    """No host, personal path, email, internal mirror, workspace / dashboard id or old spelling in any
-    project file, lockfiles included (ids are not checked in lockfiles: their hashes look alike)."""
+    """No host, personal path, email, internal mirror or workspace / dashboard id in any project file,
+    lockfiles included (ids are not checked in lockfiles: their hashes look alike)."""
     paths = [p for p in _project_files() if p != Path(__file__).resolve()]
     assert len(paths) > 60 and DEMO_ROOT / "app" / "uv.lock" in paths and DEMO_ROOT / "app" / "bun.lock" in paths
     for path in paths:

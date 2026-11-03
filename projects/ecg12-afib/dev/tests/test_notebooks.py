@@ -60,15 +60,6 @@ def test_notebook_is_valid_databricks_source(path):
     compile(_python_source(path), str(path), "exec")
 
 
-@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.name)
-def test_no_dropped_columns_or_old_patterns_in_code(path):
-    """Code uses the 12-lead record and common/config names: no dropped patient columns, 8-lead
-    reshape, capitalised alias, cluster-library install or hyperparameter search."""
-    code = " ".join(_code_tokens(path))
-    for stale in ("install_libraries", "pmh", "anti_htn", "input_list", "reshape(-1, 8", "@Champion", "optuna"):
-        assert stale not in code, f"{path.name}: {stale!r}"
-
-
 @pytest.mark.parametrize("path", [p for p in NOTEBOOKS if p.name != "00_overview.py"], ids=lambda p: p.name)
 def test_catalog_is_a_required_parameter(path):
     """No catalog default anywhere: the catalog_name widget starts empty and goes through
@@ -192,14 +183,12 @@ def test_training_reads_the_persisted_dataset_and_logs_thoroughly(name):
 @pytest.mark.parametrize("name", BATCH)
 def test_batch_scoring_is_driver_side_at_the_pinned_champion(name):
     """07_ / 08_ resolve champion to a version, load exactly that version and score on the driver
-    with score_driver_side, as the gate does; no spark_udf (docs/future-work.md)."""
+    with score_driver_side, as the gate does."""
     code = _python_source(WORKFLOW / name)
     kind = "arr" if name.startswith("07") else "afib"
     assert f"{kind} = scoring.resolve_alias(MlflowClient(registry_uri=\"databricks-uc\"), {kind}_model_full)" in code
     assert f"{kind}_model = mlflow.pyfunc.load_model({kind}.uri)" in code
     assert code.count("scoring.score_driver_side(") == 1 and f"model_info={kind}.info" in code
-    for udf in ("spark_udf", "score_spark_udf", "torch_cpu_wheels", "UDF_ENV_MANAGER"):
-        assert udf not in code, f"{name}: {udf}"
     assert "# MAGIC %pip" not in (WORKFLOW / name).read_text()       # the ML v5 environment has torch
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from importlib import resources
 from pathlib import Path
 from typing import ClassVar
 
@@ -26,9 +25,7 @@ class AppConfig(BaseSettings):
         env_file=env_file,
         env_prefix=f"{app_slug.upper()}_",
         extra="ignore",
-        env_nested_delimiter="__",
     )
-    app_name: str = Field(default=app_name)
     # Where this deployment's tables and models live, which serving endpoints it calls, which
     # AI/BI dashboard the Batch tab embeds and which DAILY job the header's Lakeflow link opens. The
     # bundle's `full` target sets them (databricks.yml, resources.apps.*.config.env) from its
@@ -61,13 +58,6 @@ class AppConfig(BaseSettings):
     def endpoints(self) -> tuple[str, str]:
         """This deployment's (triage, classify) serving endpoint names."""
         return endpoint_names(self.endpoint_prefix)
-
-    @property
-    def static_assets_path(self) -> Path:
-        return Path(str(resources.files(app_slug))).joinpath("__dist__")
-
-    def __hash__(self) -> int:
-        return hash(self.app_name)
 
 
 # --- Logger ---

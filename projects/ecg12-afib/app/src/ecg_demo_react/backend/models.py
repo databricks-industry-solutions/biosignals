@@ -1,19 +1,8 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from .. import __version__
 from .common.patient_info import PatientRecord
 
-
-class VersionOut(BaseModel):
-    version: str
-
-    @classmethod
-    def from_metadata(cls):
-        return cls(version=__version__)
-
-
-# ---- ECG/AFib demo models ---------------------------------------------------
 
 class GenerateRequest(BaseModel):
     """Which rhythm to simulate. 'Random' draws a class uniformly server-side."""

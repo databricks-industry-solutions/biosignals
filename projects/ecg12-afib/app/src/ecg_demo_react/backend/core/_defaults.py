@@ -3,11 +3,10 @@ from typing import Annotated, AsyncGenerator, TypeAlias
 from contextlib import asynccontextmanager
 
 from databricks.sdk import WorkspaceClient
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 
 from ._base import LifespanDependency
 from ._config import AppConfig, logger
-from ._headers import HeadersDependency
 
 
 class _ConfigDependency(LifespanDependency):
@@ -33,32 +32,8 @@ class _WorkspaceClientDependency(LifespanDependency):
         return request.app.state.workspace_client
 
 
-def _get_user_ws(
-    headers: HeadersDependency,
-) -> WorkspaceClient:
-    """
-    Returns a Databricks Workspace client with authentication behalf of user.
-    If the request contains an X-Forwarded-Access-Token header, on behalf of user authentication is used.
-
-    Example usage: `user_ws: Dependencies.UserClient`
-    """
-
-    if not headers.token:
-        raise ValueError(
-            "OBO token is not provided in the header X-Forwarded-Access-Token"
-        )
-
-    return WorkspaceClient(
-        token=headers.token.get_secret_value(), auth_type="pat"
-    )  # set pat explicitly to avoid issues with SP client
-
-
 ConfigDependency: TypeAlias = Annotated[AppConfig, _ConfigDependency.depends()]
 
 ClientDependency: TypeAlias = Annotated[
     WorkspaceClient, _WorkspaceClientDependency.depends()
-]
-
-UserWorkspaceClientDependency: TypeAlias = Annotated[
-    WorkspaceClient, Depends(_get_user_ws)
 ]

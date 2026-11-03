@@ -30,5 +30,5 @@
         "@/*": ["./src/ecg_demo_react/ui/*"]
       }
     },
-    "include": ["src/ecg_demo_react/ui", "vite.config.ts", ".apx", "src/ecg_demo_react/ui/types/vite-env.d.ts"]
+    "include": ["src/ecg_demo_react/ui", "src/ecg_demo_react/ui/types/vite-env.d.ts"]
   }

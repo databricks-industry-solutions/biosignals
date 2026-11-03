@@ -36,11 +36,6 @@ metadata-path = "src/ecg_demo_react/_metadata.py"
 [tool.apx.ui]
 root = "src/ecg_demo_react/ui"
 
-[tool.apx.ui.registries]
-"@animate-ui" = "https://animate-ui.com/r/{name}.json"
-"@ai-elements" = "https://registry.ai-sdk.dev/{name}.json"
-"@svgl" = "https://svgl.app/r/{name}.json"
-
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
 build-backend = "hatchling.build"

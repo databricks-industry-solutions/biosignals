@@ -9,13 +9,11 @@ import numpy as np
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
 from databricks.sdk.errors import DatabricksError, DeadlineExceeded, TooManyRequests
-from databricks.sdk.service.iam import User as UserOut
 from fastapi import FastAPI, HTTPException, Request
 
 from .core import Dependencies, create_router
 from .core._base import LifespanDependency
 from .models import (
-    VersionOut,
     GenerateRequest, GenerateResponse,
     AnalyzeRequest, AnalyzeResponse,
     AppConfigOut,
@@ -103,16 +101,6 @@ def _predict(serving: WorkspaceClient, endpoint: str, inputs: Any, client_reques
             endpoint=endpoint, reason="error", message=f"The model endpoint {endpoint} returned no predictions.",
         ))
     return predictions[0]
-
-
-@router.get("/version", response_model=VersionOut, operation_id="version")
-async def version():
-    return VersionOut.from_metadata()
-
-
-@router.get("/current-user", response_model=UserOut, operation_id="currentUser")
-def me(user_ws: Dependencies.UserClient):
-    return user_ws.current_user.me()
 
 
 @router.get("/app-config", response_model=AppConfigOut, operation_id="appConfig")

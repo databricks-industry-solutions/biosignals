@@ -9,7 +9,8 @@ from scipy.signal import find_peaks
 from common import config
 from common.ecg_signal_gen import (
     AFIB, DERIVED_LEADS, HEART_RATE_RANGE_BPM, LABEL_NAMES, LEADS_12, N_SAMPLES,
-    NSR, OTHER, SAMPLING_RATE, derive_limb_leads, generate_ecg_batch, lead_names_for, synthesize_ecgs,
+    NSR, OTHER, SAMPLING_RATE, class_counts, derive_limb_leads, generate_ecg_batch, lead_names_for,
+    synthesize_ecgs,
 )
 
 
@@ -69,6 +70,23 @@ def test_seed_reproducible_and_labels_follow_fractions():
         generate_ecg_batch(4, frac_afib=0.7, frac_other=0.5)
     with pytest.raises(ValueError, match="unknown rhythm"):
         synthesize_ecgs(np.array([0, 7]), np.random.default_rng(0))
+
+
+def test_class_counts_keep_the_mix_for_small_n():
+    """Counts sum to n and each is its share rounded down or up, also where rounding both abnormal
+    shares half to even used to miss (n=5 at 0.5 / 0.5 gave 2 + 2 and 1 NSR; n=1 gave 1 NSR)."""
+    assert class_counts(5, 0.5, 0.5) == {AFIB: 3, OTHER: 2, NSR: 0}
+    assert class_counts(1, 0.5, 0.5) == {AFIB: 1, OTHER: 0, NSR: 0}
+    assert class_counts(6, 0.25, 0.25) == {AFIB: 2, OTHER: 1, NSR: 3}
+    assert class_counts(200, 0.34, 0.33) == {AFIB: 68, OTHER: 66, NSR: 66}      # as before (val / holdout)
+    for n in range(1, 13):
+        for fa, fo in [(a / 4, o / 4) for a in range(5) for o in range(5 - a)]:
+            counts = class_counts(n, fa, fo)
+            shares = {AFIB: n * fa, OTHER: n * fo, NSR: n * (1 - fa - fo)}
+            assert sum(counts.values()) == n, (n, fa, fo)
+            assert all(abs(counts[k] - shares[k]) < 1 for k in shares), (n, fa, fo, counts)
+    labels = generate_ecg_batch(5, frac_afib=0.5, frac_other=0.5, seed=1, noise_level=0.0).labels
+    assert [int((labels == k).sum()) for k in (AFIB, OTHER, NSR)] == [3, 2, 0]
 
 
 def test_normal_12_lead_morphology():

@@ -94,14 +94,9 @@ def convert_to_html_fragment(filepath):
 </div>
 </div>''')
     
-    # Return just the content fragment (no full HTML document)
+    # Return just the content fragment (no full HTML document); __main__ collects the fragments
+    # into notebook_fragments.json, which publish.yaml reads
     fragment_content = '\n'.join(html_content)
-    
-    # Write fragment to temp file for the main script to read
-    temp_path = f"temp_{name_without_ext}_fragment.html"
-    with open(temp_path, 'w') as f:
-        f.write(fragment_content)
-    
     return name_without_ext, fragment_content
 
 

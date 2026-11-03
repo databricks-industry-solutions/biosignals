@@ -172,19 +172,18 @@ jobs:
                   py_notebooks = json.load(f)
                   notebooks.update({name: clean(fragment) for name, fragment in py_notebooks.items()})
           
-          # Read .ipynb notebook content (extract body from temp files)
+          # Read .ipynb notebook content (extract body from the nbconvert outputs, temp_<project>__<notebook>.html)
           for temp_file in glob.glob('temp_*.html'):
-              if 'fragment' not in temp_file:  # These are the nbconvert outputs
-                  name = temp_file.replace('temp_', '').replace('.html', '')
-                  with open(temp_file, 'r') as f:
-                      content = f.read()
-                  # Extract body content
-                  soup = BeautifulSoup(content, 'html.parser')
-                  body = soup.find('body')
-                  if body:
-                      # Find the notebook container
-                      container = body.find('div', class_='container')
-                      notebooks[name] = clean(str(container if container else body))
+              name = temp_file.replace('temp_', '').replace('.html', '')
+              with open(temp_file, 'r') as f:
+                  content = f.read()
+              # Extract body content
+              soup = BeautifulSoup(content, 'html.parser')
+              body = soup.find('body')
+              if body:
+                  # Find the notebook container
+                  container = body.find('div', class_='container')
+                  notebooks[name] = clean(str(container if container else body))
           
           # Create single-page application
           html = f'''<!DOCTYPE html>
@@ -550,7 +549,7 @@ jobs:
           
           print(f"Created single-page application with {len(notebooks)} notebooks")
           
-          # Clean up temporary files
+          # Clean up temporary files (the nbconvert outputs)
           for temp_file in glob.glob('temp_*.html'):
               os.remove(temp_file)
           if os.path.exists('notebook_fragments.json'):

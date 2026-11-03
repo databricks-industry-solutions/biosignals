@@ -16,7 +16,7 @@ DAILY run, before unpausing the DAILY schedule (see [`../../docs/deploy.md`](../
 
 | File | Checks |
 |---|---|
-| `test_ecg_signal_gen.py` | The shared 12-lead generator (`common/ecg_signal_gen.py`), including the derived-lead formulas |
+| `test_ecg_signal_gen.py` | The shared 12-lead generator (`common/ecg_signal_gen.py`), including the derived-lead formulas and the class counts of a batch |
 | `test_patient_info.py` | The synthetic, non-PII patient record (`common/patient_info.py`) |
 | `test_training.py` | Training data, training loop and layer table, sample-signal plots (`common/training_data.py`, `training.py`, `ecg_plots.py`) |
 | `test_evaluation.py` | Metrics, the gate's threshold check and the evaluation tables, curves and figures (`common/evaluation.py`, `eval_plots.py`) |

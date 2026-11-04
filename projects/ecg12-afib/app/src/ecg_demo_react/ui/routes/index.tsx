@@ -49,12 +49,19 @@ type Links = ReturnType<typeof buildLinks>;
 
 const LINK_CLS = "font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900";
 
-/** External link; without a URL (app config not loaded, or no dashboard configured) the same text and style, unlinked. */
-function Ext({ href, className = LINK_CLS, children }: { href?: string; className?: string; children: ReactNode }) {
+/** A link class without what makes text look clickable (underline, its offset, hover colour). */
+function unlinked(cls: string) {
+  return cls.split(" ").filter((c) => !c.startsWith("underline") && !c.startsWith("hover:")).join(" ");
+}
+const UNLINKED_CLS = unlinked(LINK_CLS);   // LINK_CLS's size, weight and colour, for text with no URL
+
+/** External link. Without a URL (app config not loaded, or no dashboard configured): the same text,
+ *  size, weight and colour, but not underlined, so it never looks clickable. */
+function Ext({ href, className, children }: { href?: string; className?: string; children: ReactNode }) {
   return href ? (
-    <a href={href} target="_blank" rel="noreferrer" className={className}>{children}</a>
+    <a href={href} target="_blank" rel="noreferrer" className={className ?? LINK_CLS}>{children}</a>
   ) : (
-    <span className={className}>{children}</span>
+    <span className={className ? unlinked(className) : UNLINKED_CLS}>{children}</span>
   );
 }
 

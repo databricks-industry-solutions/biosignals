@@ -248,4 +248,3 @@ def test_score_driver_side_empty_input_skips_the_model(spark):
                                     model_info_col="afib_model_info", model_info="x")
     assert out.count() == 0
     assert {"afib_predictions_0", "afib_predictions_1", "afib_model_info"} <= set(out.columns)
-

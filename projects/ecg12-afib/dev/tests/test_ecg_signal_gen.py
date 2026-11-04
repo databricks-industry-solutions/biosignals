@@ -78,6 +78,7 @@ def test_class_counts_keep_the_mix_for_small_n():
     assert class_counts(5, 0.5, 0.5) == {AFIB: 3, OTHER: 2, NSR: 0}
     assert class_counts(1, 0.5, 0.5) == {AFIB: 1, OTHER: 0, NSR: 0}
     assert class_counts(6, 0.25, 0.25) == {AFIB: 2, OTHER: 1, NSR: 3}
+    assert class_counts(25, 0.02, 0.58) == {AFIB: 1, OTHER: 14, NSR: 10}       # NSR share exactly 10, not 11
     assert class_counts(200, 0.34, 0.33) == {AFIB: 68, OTHER: 66, NSR: 66}      # as before (val / holdout)
     for n in range(1, 13):
         for fa, fo in [(a / 4, o / 4) for a in range(5) for o in range(5 - a)]:

@@ -39,6 +39,7 @@ four limb leads are derived, so the derivation formulas hold exactly on the outp
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from typing import NamedTuple
 
 import numpy as np
@@ -136,19 +137,25 @@ def derive_afib_truth(labels: np.ndarray) -> np.ndarray:
 def class_counts(n: int, frac_afib: float = 0.25, frac_other: float = 0.25) -> dict[int, int]:
     """ECGs per rhythm class (``LABEL_NAMES`` keys) for ``n`` ECGs with the given mix, the rest NSR.
 
-    The counts sum to ``n`` and each is its share (``n * frac``) rounded down or up. First the
-    counts every persisted dataset was drawn with: AFib and Other each rounded to the nearest
-    count (Other capped at what AFib leaves), NSR the rest. Those miss only when both abnormal
-    shares end in one half, as Python rounds halves to even (n=5 at 0.5 / 0.5 gave 2 + 2 and 1 NSR,
-    n=1 gave 1 NSR); then the counts are the largest-remainder allocation of the three shares
-    (equal remainders: AFib, then Other, then NSR)."""
+    The counts sum to ``n`` and each is its share (``n * frac``; NSR: ``n * (1 - frac_afib -
+    frac_other)``) rounded down or up. First the counts every persisted dataset was drawn with:
+    AFib and Other each rounded to the nearest count (Other capped at what AFib leaves), NSR the
+    rest. Those miss only when both abnormal shares end in one half, as Python rounds halves to
+    even (n=5 at 0.5 / 0.5 gave 2 + 2 and 1 NSR, n=1 gave 1 NSR); then the counts are the
+    largest-remainder allocation of the three shares (equal remainders: AFib, then Other, then NSR).
+
+    The shares are computed exactly, from each fraction's shortest decimal form (0.58 as 29/50),
+    not in floating point: there 25 x 0.58 is 14.499999999999998, 25 - 25 x 0.02 - 25 x 0.58 is
+    10.000000000000002 and 5 x (1 - 0.3 - 0.3) is 1.9999999999999998, which would accept a count
+    past its share (11 NSR for a share of 10, 1 for a share of 2)."""
     if frac_afib + frac_other > 1.0:
         raise ValueError(f"frac_afib + frac_other = {frac_afib + frac_other} > 1.0")
-    shares = {AFIB: n * frac_afib, OTHER: n * frac_other}
-    shares[NSR] = max(n - shares[AFIB] - shares[OTHER], 0.0)
-    n_afib = min(round(shares[AFIB]), n)
-    counts = {AFIB: n_afib, OTHER: min(round(shares[OTHER]), n - n_afib)}
+    # The old counts, from the float products exactly as the old code rounded them.
+    n_afib = min(int(round(n * frac_afib)), n)
+    counts = {AFIB: n_afib, OTHER: min(int(round(n * frac_other)), n - n_afib)}
     counts[NSR] = n - counts[AFIB] - counts[OTHER]
+    afib, other = Fraction(str(float(frac_afib))), Fraction(str(float(frac_other)))
+    shares = {AFIB: n * afib, OTHER: n * other, NSR: max(n * (1 - afib - other), Fraction(0))}
     if all(math.floor(shares[k]) <= counts[k] <= math.ceil(shares[k]) for k in shares):
         return counts
     counts = {k: math.floor(share) for k, share in shares.items()}

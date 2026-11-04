@@ -1,0 +1,1350 @@
+{
+  "datasets": [
+    {
+      "name": "funnel",
+      "displayName": "Batch: triage funnel (latest day)",
+      "queryLines": [
+        "SELECT (SELECT COUNT(*) FROM arr_triage_history_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l)) AS total_signals, ",
+        "(SELECT COUNT(*) FROM arr_triage_history_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l) AND arr_flag = 1) AS flagged_abnormal, ",
+        "(SELECT COUNT(*) FROM dailyOrweekly_arr_afib_inference_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l) AND afib_predictions_1 > 0.5) AS afib_positive"
+      ]
+    },
+    {
+      "name": "arrivals",
+      "displayName": "Batch: ECGs landed per hour (latest day)",
+      "queryLines": [
+        "SELECT hour(acquisition_datetime_utc) AS hour_utc, CASE rhythm_label WHEN 0 THEN 'NSR' WHEN 1 THEN 'AFib' WHEN 2 THEN 'Other' END AS rhythm, COUNT(*) AS n ",
+        "FROM arr_triage_history_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l) ",
+        "GROUP BY hour(acquisition_datetime_utc), rhythm_label ORDER BY hour_utc, rhythm_label"
+      ]
+    },
+    {
+      "name": "triage_accuracy",
+      "displayName": "Batch: triage by rhythm (latest day)",
+      "queryLines": [
+        "SELECT CASE rhythm_label WHEN 0 THEN 'NSR' WHEN 1 THEN 'AFib' WHEN 2 THEN 'Other' END AS rhythm, ",
+        "CASE WHEN arr_flag = 1 THEN 'flagged (->afib)' ELSE 'not flagged' END AS triage, ",
+        "COUNT(*) AS n FROM arr_triage_history_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l) GROUP BY rhythm_label, arr_flag ORDER BY rhythm_label"
+      ]
+    },
+    {
+      "name": "prob_hist",
+      "displayName": "Batch: AFib probability (latest day)",
+      "queryLines": [
+        "SELECT ROUND(afib_predictions_1, 1) AS prob_bin, COUNT(*) AS n FROM dailyOrweekly_arr_afib_inference_12l ",
+        "WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l) GROUP BY ROUND(afib_predictions_1, 1) ORDER BY prob_bin"
+      ]
+    },
+    {
+      "name": "trend",
+      "displayName": "Batch: daily trend (every day)",
+      "queryLines": [
+        "SELECT batch_date AS date, ",
+        "COUNT(*) AS afib_classified, ",
+        "SUM(CASE WHEN afib_predictions_1 > 0.5 THEN 1 ELSE 0 END) AS afib_positive FROM dailyOrweekly_arr_afib_inference_12l ",
+        "GROUP BY 1 ORDER BY 1"
+      ]
+    },
+    {
+      "name": "afib_by_age",
+      "displayName": "Batch: AFib-positive by age band (latest day)",
+      "queryLines": [
+        "SELECT t.age_band, COUNT(*) AS screened, ",
+        "SUM(CASE WHEN i.afib_predictions_1 > 0.5 THEN 1 ELSE 0 END) AS afib_positive, ",
+        "ROUND(SUM(CASE WHEN i.afib_predictions_1 > 0.5 THEN 1 ELSE 0 END) / COUNT(*), 3) AS afib_positive_share ",
+        "FROM (SELECT pseudo_patient_id, CASE WHEN age_years < 50 THEN '40-49' WHEN age_years < 60 THEN '50-59' WHEN age_years < 70 THEN '60-69' WHEN age_years < 80 THEN '70-79' ELSE '80-90' END AS age_band FROM arr_triage_history_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l)) t ",
+        "LEFT JOIN (SELECT pseudo_patient_id, afib_predictions_1 FROM dailyOrweekly_arr_afib_inference_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l)) i ",
+        "USING (pseudo_patient_id) GROUP BY t.age_band ORDER BY t.age_band"
+      ]
+    },
+    {
+      "name": "worklist",
+      "displayName": "Batch: flagged-patient worklist (latest day)",
+      "queryLines": [
+        "SELECT batch_date AS batch_date, mrn, age_years AS age, sex, bmi, heart_rate_bpm AS hr_bpm, ",
+        "CONCAT(bp_systolic_mmhg, '/', bp_diastolic_mmhg) AS bp_mmhg, ",
+        "CASE rhythm_label WHEN 0 THEN 'NSR' WHEN 1 THEN 'AFib' WHEN 2 THEN 'Other' END AS true_rhythm, ROUND(afib_predictions_1, 3) AS p_afib, ",
+        "CASE WHEN afib_predictions_1 > 0.5 THEN 'AFib' ELSE 'not AFib' END AS afib_call, ",
+        "date_format(acquisition_datetime_utc, 'HH:mm') AS acquired_utc ",
+        "FROM dailyOrweekly_arr_afib_inference_12l WHERE batch_date = (SELECT max(batch_date) FROM arr_triage_history_12l) ORDER BY afib_predictions_1 DESC LIMIT 25"
+      ]
+    },
+    {
+      "name": "live_requests",
+      "displayName": "Live: endpoint requests (AI Gateway inference tables)",
+      "queryLines": [
+        "SELECT 'bio_ecg12_arr (triage)' AS endpoint, databricks_request_id, request_time, date_trunc('HOUR', request_time) AS request_hour, status_code, execution_duration_ms, ROUND(length(request) / 1024.0, 0) AS request_kb, CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged FROM bio_ecg12_arr_payload WHERE client_request_id IS DISTINCT FROM 'app-warmup' ",
+        "UNION ALL ",
+        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time, date_trunc('HOUR', request_time) AS request_hour, status_code, execution_duration_ms, ROUND(length(request) / 1024.0, 0) AS request_kb, CASE WHEN request IS NULL OR coalesce(size(logging_error_codes), 0) > 0 THEN 1 ELSE 0 END AS not_logged FROM bio_ecg12_afib_payload WHERE client_request_id IS DISTINCT FROM 'app-warmup' ",
+        "ORDER BY request_time DESC"
+      ]
+    },
+    {
+      "name": "live_predictions",
+      "displayName": "Live: returned probabilities",
+      "queryLines": [
+        "SELECT 'bio_ecg12_arr (triage)' AS endpoint, request_time, p.arr_prob AS score, ROUND(p.arr_prob, 1) AS score_bin ",
+        "FROM (SELECT request_time, explode(from_json(response, 'predictions ARRAY<STRUCT<arr_prob: DOUBLE, arr_flag: DOUBLE>>').predictions) AS p ",
+        "FROM bio_ecg12_arr_payload WHERE status_code = 200 AND response IS NOT NULL AND client_request_id IS DISTINCT FROM 'app-warmup') ",
+        "UNION ALL ",
+        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, request_time, p[1] AS score, ROUND(p[1], 1) AS score_bin ",
+        "FROM (SELECT request_time, explode(from_json(response, 'predictions ARRAY<ARRAY<DOUBLE>>').predictions) AS p ",
+        "FROM bio_ecg12_afib_payload WHERE status_code = 200 AND response IS NOT NULL AND client_request_id IS DISTINCT FROM 'app-warmup')"
+      ]
+    },
+    {
+      "name": "live_warmups",
+      "displayName": "Live: app warm-up pings",
+      "queryLines": [
+        "SELECT 'bio_ecg12_arr (triage)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_arr_payload WHERE client_request_id = 'app-warmup' ",
+        "UNION ALL ",
+        "SELECT 'bio_ecg12_afib (classify)' AS endpoint, databricks_request_id, request_time FROM bio_ecg12_afib_payload WHERE client_request_id = 'app-warmup' "
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "ECG/AFib 12-lead: batch + live",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## ECG/AFib on Databricks — 12-lead triage → classify\n",
+                "\n",
+                "Synthetic 12-lead ECGs with synthetic patient records land in Unity Catalog; an *arr* (triage) model flags abnormal rhythms; an *AFib* model classifies the flagged. Two scoring paths, two sections below. The single-day batch tiles show the **latest batch date**."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr-batch",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Batch monitoring — DAILY job (models loaded from Unity Catalog @champion, scored in the job; endpoints not called)\n",
+                "\n",
+                "Sources: `arr_triage_history_12l` (every ECG of every day) and `dailyorweekly_arr_afib_inference_12l` (flagged ECGs of every day). Single-day tiles: the latest `batch_date` in `arr_triage_history_12l`. These tiles show an error until the DAILY job has run once."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-total",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "funnel",
+                  "fields": [
+                    {
+                      "name": "total_signals",
+                      "expression": "`total_signals`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "total_signals",
+                  "displayName": "ECGs landed (latest day)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "ECGs landed (latest day)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 4,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-flagged",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "funnel",
+                  "fields": [
+                    {
+                      "name": "flagged_abnormal",
+                      "expression": "`flagged_abnormal`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "flagged_abnormal",
+                  "displayName": "Flagged abnormal by triage (latest day)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flagged abnormal by triage (latest day)"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 4,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-afib",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "funnel",
+                  "fields": [
+                    {
+                      "name": "afib_positive",
+                      "expression": "`afib_positive`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "afib_positive",
+                  "displayName": "AFib-positive by classifier (latest day)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "AFib-positive by classifier (latest day)"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 4,
+            "width": 4,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "arrivals-bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "arrivals",
+                  "fields": [
+                    {
+                      "name": "hour_utc",
+                      "expression": "`hour_utc`"
+                    },
+                    {
+                      "name": "n",
+                      "expression": "`n`"
+                    },
+                    {
+                      "name": "rhythm",
+                      "expression": "`rhythm`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "hour_utc",
+                  "displayName": "Hour acquired (UTC)",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "n",
+                  "displayName": "ECGs",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "rhythm",
+                  "displayName": "True rhythm",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "NSR",
+                        "color": "#2a78d6"
+                      },
+                      {
+                        "value": "AFib",
+                        "color": "#eb6834"
+                      },
+                      {
+                        "value": "Other",
+                        "color": "#1baf7a"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "ECGs landed per hour, by true rhythm (the day's incoming stream)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "triage-bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "triage_accuracy",
+                  "fields": [
+                    {
+                      "name": "rhythm",
+                      "expression": "`rhythm`"
+                    },
+                    {
+                      "name": "n",
+                      "expression": "`n`"
+                    },
+                    {
+                      "name": "triage",
+                      "expression": "`triage`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "triage",
+                  "displayName": "Triage outcome",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "n",
+                  "displayName": "ECGs",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "rhythm",
+                  "displayName": "True rhythm",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "NSR",
+                        "color": "#2a78d6"
+                      },
+                      {
+                        "value": "AFib",
+                        "color": "#eb6834"
+                      },
+                      {
+                        "value": "Other",
+                        "color": "#1baf7a"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Triage by true rhythm (arr model)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 8,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "prob-bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "prob_hist",
+                  "fields": [
+                    {
+                      "name": "prob_bin",
+                      "expression": "`prob_bin`"
+                    },
+                    {
+                      "name": "n",
+                      "expression": "`n`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "prob_bin",
+                  "displayName": "AFib probability (bin)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "n",
+                  "displayName": "Flagged ECGs",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "AFib-probability distribution (flagged ECGs, latest day)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "afib-age-bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "afib_by_age",
+                  "fields": [
+                    {
+                      "name": "age_band",
+                      "expression": "`age_band`"
+                    },
+                    {
+                      "name": "afib_positive_share",
+                      "expression": "`afib_positive_share`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "age_band",
+                  "displayName": "Age band (years)",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "afib_positive_share",
+                  "displayName": "AFib-positive (share of screened)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "AFib-positive share by age band (latest day)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 13,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "trend-bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "trend",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "afib_classified",
+                      "expression": "`afib_classified`"
+                    },
+                    {
+                      "name": "afib_positive",
+                      "expression": "`afib_positive`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "date",
+                  "displayName": "Batch date",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "afib_classified",
+                      "displayName": "Classified (flagged)"
+                    },
+                    {
+                      "fieldName": "afib_positive",
+                      "displayName": "AFib-positive"
+                    }
+                  ]
+                },
+                "color": {
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Classified (flagged)",
+                        "color": "#2a78d6"
+                      },
+                      {
+                        "value": "AFib-positive",
+                        "color": "#eb6834"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily batch inference (every day)"
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 18,
+            "width": 12,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "worklist-table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "worklist",
+                  "fields": [
+                    {
+                      "name": "batch_date",
+                      "expression": "`batch_date`"
+                    },
+                    {
+                      "name": "mrn",
+                      "expression": "`mrn`"
+                    },
+                    {
+                      "name": "age",
+                      "expression": "`age`"
+                    },
+                    {
+                      "name": "sex",
+                      "expression": "`sex`"
+                    },
+                    {
+                      "name": "bmi",
+                      "expression": "`bmi`"
+                    },
+                    {
+                      "name": "hr_bpm",
+                      "expression": "`hr_bpm`"
+                    },
+                    {
+                      "name": "bp_mmhg",
+                      "expression": "`bp_mmhg`"
+                    },
+                    {
+                      "name": "true_rhythm",
+                      "expression": "`true_rhythm`"
+                    },
+                    {
+                      "name": "p_afib",
+                      "expression": "`p_afib`"
+                    },
+                    {
+                      "name": "afib_call",
+                      "expression": "`afib_call`"
+                    },
+                    {
+                      "name": "acquired_utc",
+                      "expression": "`acquired_utc`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "batch_date",
+                    "displayName": "Batch date"
+                  },
+                  {
+                    "fieldName": "mrn",
+                    "displayName": "MRN (synthetic)"
+                  },
+                  {
+                    "fieldName": "age",
+                    "displayName": "Age"
+                  },
+                  {
+                    "fieldName": "sex",
+                    "displayName": "Sex"
+                  },
+                  {
+                    "fieldName": "bmi",
+                    "displayName": "BMI"
+                  },
+                  {
+                    "fieldName": "hr_bpm",
+                    "displayName": "HR (bpm)"
+                  },
+                  {
+                    "fieldName": "bp_mmhg",
+                    "displayName": "BP (mmHg)"
+                  },
+                  {
+                    "fieldName": "true_rhythm",
+                    "displayName": "True rhythm"
+                  },
+                  {
+                    "fieldName": "p_afib",
+                    "displayName": "p(AFib)"
+                  },
+                  {
+                    "fieldName": "afib_call",
+                    "displayName": "AFib call"
+                  },
+                  {
+                    "fieldName": "acquired_utc",
+                    "displayName": "Acquired (UTC)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flagged-patient worklist (latest day, top 25 by AFib probability)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 23,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "patient-note",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**Who is being flagged.** Every ECG row carries a synthetic patient + acquisition record (`mrn`, age, sex, height, weight, BMI, blood pressure, heart rate measured from the ECG, acquisition time). AFib rises with age, as in real populations. The worklist ranks the day's flagged patients by AFib probability — the queue a cardiology reviewer would work through."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 29,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr-live",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Live serving — the app (endpoint calls logged by AI Gateway)\n",
+                "\n",
+                "Sources: `bio_ecg12_arr_payload` and `bio_ecg12_afib_payload`, the endpoints' inference tables. Each *Triage → Classify* click in the app adds a row to the triage table, and one to the classify table when the ECG is flagged. Batch scoring never appears here. Execution time is the model's inference time only (no network overhead). The app's warm-up pings (one single-ECG request per endpoint, keeping the scale-to-zero endpoints awake; `client_request_id = 'app-warmup'`) are left out of every tile below and counted on their own. **These tiles show an error until AI Gateway has delivered the first inference-table logs** (best effort, typically within about an hour of the first app request): until then the tables have no columns but `databricks_request_id`."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 31,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-requests",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_requests",
+                  "fields": [
+                    {
+                      "name": "count(databricks_request_id)",
+                      "expression": "COUNT(`databricks_request_id`)"
+                    },
+                    {
+                      "name": "daily(request_time)",
+                      "expression": "DATE_TRUNC(\"DAY\", `request_time`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(databricks_request_id)",
+                  "displayName": "Endpoint requests"
+                },
+                "period": {
+                  "fieldName": "daily(request_time)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Endpoint requests"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 34,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-exec",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_requests",
+                  "fields": [
+                    {
+                      "name": "avg(execution_duration_ms)",
+                      "expression": "AVG(`execution_duration_ms`)"
+                    },
+                    {
+                      "name": "daily(request_time)",
+                      "expression": "DATE_TRUNC(\"DAY\", `request_time`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg(execution_duration_ms)",
+                  "displayName": "Avg model execution time (ms)",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(request_time)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Avg model execution time (ms)"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 34,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-not-logged",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_requests",
+                  "fields": [
+                    {
+                      "name": "sum(not_logged)",
+                      "expression": "SUM(`not_logged`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(not_logged)",
+                  "displayName": "Requests not logged (payload > 1 MiB)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Requests not logged (payload > 1 MiB)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 34,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-warmups",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_warmups",
+                  "fields": [
+                    {
+                      "name": "count(databricks_request_id)",
+                      "expression": "COUNT(`databricks_request_id`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(databricks_request_id)",
+                  "displayName": "App warm-up pings (not in the other tiles)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "App warm-up pings (not in the other tiles)"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 34,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "live-volume",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_requests",
+                  "fields": [
+                    {
+                      "name": "request_hour",
+                      "expression": "`request_hour`"
+                    },
+                    {
+                      "name": "count(databricks_request_id)",
+                      "expression": "COUNT(`databricks_request_id`)"
+                    },
+                    {
+                      "name": "endpoint",
+                      "expression": "`endpoint`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "request_hour",
+                  "displayName": "Hour (UTC)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "count(databricks_request_id)",
+                  "displayName": "Requests",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "endpoint",
+                  "displayName": "Endpoint",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "bio_ecg12_arr (triage)",
+                        "color": "#6250d6"
+                      },
+                      {
+                        "value": "bio_ecg12_afib (classify)",
+                        "color": "#eda100"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Requests per hour, by endpoint"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 38,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "live-exec",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_requests",
+                  "fields": [
+                    {
+                      "name": "request_hour",
+                      "expression": "`request_hour`"
+                    },
+                    {
+                      "name": "avg(execution_duration_ms)",
+                      "expression": "AVG(`execution_duration_ms`)"
+                    },
+                    {
+                      "name": "endpoint",
+                      "expression": "`endpoint`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "request_hour",
+                  "displayName": "Hour (UTC)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "avg(execution_duration_ms)",
+                  "displayName": "Avg model execution time (ms)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "endpoint",
+                  "displayName": "Endpoint",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "bio_ecg12_arr (triage)",
+                        "color": "#6250d6"
+                      },
+                      {
+                        "value": "bio_ecg12_afib (classify)",
+                        "color": "#eda100"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Model execution time per hour, by endpoint"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 38,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "live-arr-prob",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_predictions",
+                  "fields": [
+                    {
+                      "name": "score_bin",
+                      "expression": "`score_bin`"
+                    },
+                    {
+                      "name": "count(score)",
+                      "expression": "COUNT(`score`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`endpoint` = 'bio_ecg12_arr (triage)'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "score_bin",
+                  "displayName": "Abnormal probability (bin)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "count(score)",
+                  "displayName": "ECGs scored live",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Triage endpoint: returned abnormal probability"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 43,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "live-afib-prob",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_predictions",
+                  "fields": [
+                    {
+                      "name": "score_bin",
+                      "expression": "`score_bin`"
+                    },
+                    {
+                      "name": "count(score)",
+                      "expression": "COUNT(`score`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`endpoint` = 'bio_ecg12_afib (classify)'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "score_bin",
+                  "displayName": "AFib probability (bin)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "count(score)",
+                  "displayName": "ECGs scored live",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Classify endpoint: returned AFib probability"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 43,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "live-table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "live_requests",
+                  "fields": [
+                    {
+                      "name": "request_time",
+                      "expression": "`request_time`"
+                    },
+                    {
+                      "name": "endpoint",
+                      "expression": "`endpoint`"
+                    },
+                    {
+                      "name": "status_code",
+                      "expression": "`status_code`"
+                    },
+                    {
+                      "name": "execution_duration_ms",
+                      "expression": "`execution_duration_ms`"
+                    },
+                    {
+                      "name": "request_kb",
+                      "expression": "`request_kb`"
+                    },
+                    {
+                      "name": "not_logged",
+                      "expression": "`not_logged`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "request_time",
+                    "displayName": "Request time (UTC)"
+                  },
+                  {
+                    "fieldName": "endpoint",
+                    "displayName": "Endpoint"
+                  },
+                  {
+                    "fieldName": "status_code",
+                    "displayName": "HTTP status"
+                  },
+                  {
+                    "fieldName": "execution_duration_ms",
+                    "displayName": "Model execution (ms)"
+                  },
+                  {
+                    "fieldName": "request_kb",
+                    "displayName": "Request (KB)"
+                  },
+                  {
+                    "fieldName": "not_logged",
+                    "displayName": "Not logged"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latest endpoint requests"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 48,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "lineage-note",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**One governed platform.** Batch lineage: `batch_data_12l_<date>` → `arr_triaged_12l_<date>` (+ `arr_triage_history_12l`) → `dailyorweekly_arr_afib_inference_12l`. Live: app → the triage and classify serving endpoints → `bio_ecg12_arr_payload` / `bio_ecg12_afib_payload`. Both paths use the same `@champion` model versions, promoted by the SETUP job's validation gate. Cheap triage screens every ECG; the costlier AFib model runs only on the flagged."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 54,
+            "width": 12,
+            "height": 2
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "selectionColor": {
+        "light": "#2272B4",
+        "dark": "#8ACAFF"
+      },
+      "visualizationColors": [
+        "#2a78d6",
+        "#eb6834",
+        "#1baf7a",
+        "#eda100",
+        "#e87ba4",
+        "#008300",
+        "#6250d6",
+        "#e34948"
+      ],
+      "widgetHeaderAlignment": "LEFT"
+    }
+  }
+}

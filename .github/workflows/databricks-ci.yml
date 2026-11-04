@@ -1,117 +1,115 @@
-name: Databricks Asset Bundles CI
+name: Validate project bundles
+
+# Pull requests only. For every project under projects/ that the pull request changes, run
+# `databricks bundle validate --strict` on the project's default target, from the project's own
+# folder. It never deploys, runs or destroys anything, and creates nothing in the workspace
+# (no warehouses, jobs or apps).
+#
+# Workspace credentials come from the repository, never from this file: the repository variable
+# DATABRICKS_HOST and the secret DATABRICKS_TOKEN. Without them (for example on a pull request
+# from a fork, which gets no secrets) the validation is skipped with a notice.
+#
+# Variables without a default (such as ecg12-afib's catalog and warehouse_id) get placeholder
+# values: validate checks the configuration, not that the catalog or warehouse exist. Targets
+# that need a local build first (ecg12-afib's `full` target needs the app built with apx) are
+# validated by that project's deploy script instead.
 
 on:
   pull_request:
-    branches:
-      - main
-  push:
-    branches:
-      - main
+    branches: [main]
+    paths:
+      - "projects/**"
+      - ".github/workflows/databricks-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundle-validate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  validate-and-test:
-    runs-on: html_publisher
-
+  changed-projects:
+    name: Find changed projects
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.detect.outputs.projects }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
         with:
-          python-version: '3.11'
+          fetch-depth: 0
 
-      - name: Set up Databricks CLI
-        uses: databricks/setup-cli@main
+      - name: List projects/<name>/ folders with a databricks.yml that the pull request changes
+        id: detect
         env:
-          DATABRICKS_HOST: 'https://e2-demo-field-eng.cloud.databricks.com'
-          DATABRICKS_TOKEN: ${{ secrets.DEPLOY_NOTEBOOK_TOKEN }}
-
-      - name: Configure Databricks CLI authentication
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo "[DEFAULT]" > ~/.databrickscfg
-          echo "host = https://e2-demo-field-eng.cloud.databricks.com" >> ~/.databrickscfg
-          echo "token = ${{ secrets.DEPLOY_NOTEBOOK_TOKEN }}" >> ~/.databrickscfg
-
-      - name: Get or Create serverless SQL warehouse
-        env:
-          DATABRICKS_HOST: 'https://e2-demo-field-eng.cloud.databricks.com'
-          DATABRICKS_TOKEN: ${{ secrets.DEPLOY_NOTEBOOK_TOKEN }}
-        run: |
-          WAREHOUSE_NAME="Shared Unity Catalog Serverless"
-          echo "Looking for warehouse named: $WAREHOUSE_NAME"
-          
-          echo "Fetching existing warehouses..."
-          EXISTING_WAREHOUSE=$(curl -s -H "Authorization: Bearer $DATABRICKS_TOKEN" \
-            "$DATABRICKS_HOST/api/2.0/sql/warehouses")
-          
-          echo "Warehouse List Response: $(echo $EXISTING_WAREHOUSE | sed 's/\"token\":\"[^\"]*\"/\"token\":\"***\"/g')"
-          
-          WAREHOUSE_ID=$(echo "$EXISTING_WAREHOUSE" | python3 -c "
-          import sys, json
-          import argparse
-
-          parser = argparse.ArgumentParser()
-          parser.add_argument('--name', required=True)
-          args = parser.parse_args()
-
-          try:
-              data = json.load(sys.stdin)
-              name = args.name
-              if 'warehouses' in data:
-                  warehouses = data['warehouses']
-                  matching = [w for w in warehouses if w['name'] == name]
-                  if matching:
-                      print(matching[0]['id'])
-                  else:
-                      print('')
-              else:
-                  print('')
-          except Exception as e:
-              print(f'Error parsing response: {str(e)}', file=sys.stderr)
-              print('')
-          " --name "$WAREHOUSE_NAME")
-          
-          if [ -z "$WAREHOUSE_ID" ]; then
-            echo "Creating new warehouse..."
-            RESPONSE=$(curl -s -X POST -H "Authorization: Bearer $DATABRICKS_TOKEN" \
-              -H "Content-Type: application/json" \
-              "$DATABRICKS_HOST/api/2.0/sql/warehouses" \
-              -d "{
-                \"name\": \"${WAREHOUSE_NAME}\",
-                \"cluster_size\": \"2X-Small\",
-                \"enable_serverless_compute\": true,
-                \"auto_stop_mins\": 10,
-                \"max_num_clusters\": 1
-              }")
-            
-            echo "Create API Response: $(echo $RESPONSE | sed 's/\"token\":\"[^\"]*\"/\"token\":\"***\"/g')"
-            WAREHOUSE_ID=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin).get('id', ''))")
+          set -euo pipefail
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" -- .github/workflows/databricks-ci.yml | grep -q .; then
+            # A change to this workflow re-validates every project.
+            dirs=$(find projects -mindepth 2 -maxdepth 2 -name databricks.yml -exec dirname {} \; | sort)
           else
-            echo "Found existing warehouse with ID: $WAREHOUSE_ID"
+            dirs=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- projects/ | cut -d / -f 1-2 | sort -u)
           fi
-          
-          if [ -z "$WAREHOUSE_ID" ]; then
-            echo "Error: Failed to get warehouse ID"
-            exit 1
+          projects=$(for d in $dirs; do if [[ -f "$d/databricks.yml" ]]; then echo "$d"; fi; done | jq -R . | jq -sc .)
+          echo "Projects to validate: $projects"
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate ${{ matrix.project }}
+    needs: changed-projects
+    if: needs.changed-projects.outputs.projects != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.changed-projects.outputs.projects) }}
+    env:
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      PROJECT: ${{ matrix.project }}
+    steps:
+      - name: Check for workspace credentials
+        id: credentials
+        run: |
+          if [[ -z "$DATABRICKS_HOST" || -z "$DATABRICKS_TOKEN" ]]; then
+            echo "::notice title=Bundle validation skipped::$PROJECT was not validated: this run has no DATABRICKS_HOST repository variable and/or DATABRICKS_TOKEN secret (pull requests from forks get no secrets). Maintainers: set both to validate against a workspace."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
           fi
-          
-          echo "Using warehouse with ID: $WAREHOUSE_ID"
-          echo "WAREHOUSE_ID=$WAREHOUSE_ID" >> $GITHUB_ENV
-          # Set default environment to dev
-          echo "DEPLOY_ENV=dev" >> $GITHUB_ENV
 
-      - name: Validate bundle
-        run: databricks bundle validate --var="environment=${{ env.DEPLOY_ENV }}"
+      - uses: actions/checkout@v4
+        if: steps.credentials.outputs.available == 'true'
 
-      - name: Deploy workflow
-        run: databricks bundle deploy --var="environment=${{ env.DEPLOY_ENV }}"        
+      - uses: actions/setup-python@v5
+        if: steps.credentials.outputs.available == 'true'
+        with:
+          python-version: "3.11"
 
-      - name: Run and monitor workflow
+      - name: Install PyYAML (reads the bundle's variables)
+        if: steps.credentials.outputs.available == 'true'
+        run: python -m pip install pyyaml==6.0.3
+
+      - uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7   # v1.20.0
+        if: steps.credentials.outputs.available == 'true'
+        with:
+          version: 1.20.0
+
+      - name: databricks bundle validate --strict (default target, placeholder variables)
+        if: steps.credentials.outputs.available == 'true'
+        working-directory: ${{ matrix.project }}
         run: |
-          echo "Starting workflow execution..."
-          databricks bundle run demo_workflow --target dev --var="environment=${{ env.DEPLOY_ENV }}"
-
-      - name: Cleanup PR deployment
-        run: |
-          databricks bundle destroy --target dev --var="environment=${{ env.DEPLOY_ENV }}" || true
+          set -euo pipefail
+          # A placeholder for every variable declared without a default or lookup.
+          mapfile -t vars < <(python - <<'PY'
+          import yaml
+          variables = (yaml.safe_load(open("databricks.yml")) or {}).get("variables") or {}
+          for name, spec in variables.items():
+              if not {"default", "lookup"} & set(spec or {}):
+                  print(f"--var={name}=ci_validate_{name}")
+          PY
+          )
+          echo "databricks bundle validate --strict ${vars[*]}"
+          databricks bundle validate --strict "${vars[@]}"

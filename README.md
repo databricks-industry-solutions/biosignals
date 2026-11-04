@@ -1,40 +1,101 @@
-# Pulse - Databricks Solution Accelerator
+# Biosignals - Databricks Solution Accelerator
 
-Home for all things EKG/ECG on Databricks
+> **Not for clinical use as provided.** The code and models here are demonstrations, not medical
+> devices. Any clinical use would need your own clinical validation and the regulatory approvals
+> that apply. See [Disclaimer](#disclaimer).
+
+A home for biosignal projects on Databricks: physiological time series such as the
+electrocardiogram (ECG), electroencephalogram (EEG), photoplethysmogram (PPG, the pulse signal
+from optical sensors), electromyogram (EMG) and wearable sensor streams.
 
 [![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
 [![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
 [![Serverless](https://img.shields.io/badge/Serverless-Compute-00C851?style=for-the-badge)](https://docs.databricks.com/en/compute/serverless.html)
 
+## Projects
+
+Projects cover the steps biosignal work usually needs:
+
+- **Ingest** waveforms from the formats they arrive in, for example DICOM waveform objects,
+  PhysioNet's WFDB, the European Data Format (EDF), HL7 annotated ECG (aECG) and device vendors'
+  XML exports, into governed tables in Unity Catalog.
+- **Signal processing:** filtering, beat and event detection, segmentation and feature
+  extraction at scale.
+- **Modeling and use:** training and validating models, real-time and batch scoring of the same
+  model, apps and dashboards, all deployable as a bundle.
+
+Each project covers part or all of this. The first, `ecg12-afib`, generates synthetic ECGs and
+covers modeling and use; ingest from real-world formats and signal processing are open for new
+projects (see [Contributing](#contributing)). Each project's README credits its contributors.
+
+| Project | What it shows |
+|---|---|
+| [`ecg12-afib`](projects/ecg12-afib/README.md) | Synthetic 12-lead ECGs: an arrhythmia model screens every ECG and an atrial fibrillation (AFib) model classifies the flagged ones. Setup job (generate, train, validate, promote, serve), daily batch job, Databricks App for live triage, AI/BI dashboard. |
+| *Your project here* | More projects are welcome: ingest, signal processing or modeling for another biosignal. Add yours under `projects/<name>/`; see [Contributing](#contributing). |
+
+Each project lives in `projects/<name>/` with its own README (prerequisites, settings, how to run
+it, costs, teardown, contributors and package licenses) and, where it deploys jobs, apps or
+dashboards, its own bundle (`databricks.yml`).
+
 ## Installation Guidelines
 
-1. Clone the project you'd like to run into your Databricks Workspace
+Clone this repository into your workspace as a Git folder, open the project's `databricks.yml` in
+the Asset Bundle Editor, set its required variables, click "Deploy", then run its jobs from the
+Deployments tab. Step-by-step with screenshots: [docs/installation.md](docs/installation.md).
 
-<img width="1726" height="677" alt="Screenshot 2025-07-23 at 11 05 25 AM" src="https://github.com/user-attachments/assets/55b1729f-ad07-420e-a271-843266abfb71" />
-
-2. Open the Asset Bundle Editor in the Databricks UI
-
-<img width="1120" height="665" alt="Screenshot 2025-07-23 at 11 06 12 AM" src="https://github.com/user-attachments/assets/d1f91256-eb8f-4456-8d88-c0a37b1bd4c5" />
-
-3. Click on "Deploy"
-
-<img width="1523" height="902" alt="Screenshot 2025-07-23 at 11 09 37 AM" src="https://github.com/user-attachments/assets/9564cbdd-c5c5-4210-bf27-2b19e6efc85b" />
-
-4. Navigate to the Deployments tab in the Asset Bundle UI (🚀 icon) and click "Run" on the job available. This will run the notebooks from this project sequentially.
-
-<img width="1527" height="880" alt="Screenshot 2025-07-23 at 11 10 13 AM" src="https://github.com/user-attachments/assets/0f612882-7123-449b-8349-1835bc59523c" />
+Projects with a Databricks App also have a script that builds the app on your laptop and does the
+full install (for example `projects/ecg12-afib/deploy.sh`). Projects create billable resources;
+each README says which, and how to remove them.
 
 ## Contributing
 
-1. **git clone** this project locally
-2. Utilize the Databricks CLI to test your changes against a Databricks workspace of your choice
+1. **git clone** this project locally.
+2. Utilize the Databricks CLI to test your changes against a Databricks workspace of your choice.
 3. Contribute to repositories with pull requests (PRs), ensuring that you always have a second-party review from a capable teammate
 
+New projects go in `projects/<name>/` with their own README (including a Contributors section and
+package-license tables) and, where they deploy workspace resources, their own bundle. Use
+synthetic data, or public de-identified datasets whose license allows this use, attributed to their
+source (datasets that are not synthetic need legal approval). Keep PII and workspace-specific
+values out of committed files.
+CI validates the bundle of each changed project that has one; it never deploys. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 📄 Third-Party Package Licenses - FILL IN WITH YOUR PROJECT'S OPEN SOURCE PACKAGES + LICENSING
+## Disclaimer
+
+This applies to every project in this repository, whatever data it uses.
+
+- **Not for clinical use as provided.** The code and models are provided as reference
+  implementations and integrated demos, to learn from and adapt. They are not clinically
+  validated, are not medical devices, and must not be used for diagnosis, treatment or any
+  clinical decision. Any clinical use would need your own clinical validation on representative
+  real data and the regulatory approvals that apply.
+- **No patient data.** Neither the data nor the code contains patient personally identifiable
+  information (PII) or source patient records. Projects use synthetic data generated by their own
+  code, or public datasets that are de-identified, used under their license and attributed to
+  their source. Each project's section in [NOTICE.md](NOTICE.md) says where its data comes from
+  and, for a public dataset, its source and license.
+- **Metrics.** Results reflect the data a project uses, not real-world clinical performance.
+  Synthetic data in particular can be separable by design, so near-perfect scores show how the
+  data was built.
+- **Your data, your responsibility.** If you adapt a project to your own data, meeting the
+  privacy, security and regulatory requirements that apply (for example HIPAA) is your
+  responsibility.
+
+## Project support
+
+Please note the code in this project is provided for your exploration only, and are not formally supported by Databricks with Service Level Agreements (SLAs). They are provided AS-IS and we do not make any guarantees of any kind. Please do not submit a support ticket relating to any issues arising from the use of these projects. The source in this project is provided subject to the Databricks [License](./LICENSE.md). All included or referenced third party libraries are subject to the licenses set forth below.
+
+Any issues discovered through the use of this project should be filed as GitHub Issues on the Repo. They will be reviewed as time permits, but there are no formal SLAs for support.
+
+## 📄 Third-Party Package Licenses
 
 &copy; 2025 Databricks, Inc. All rights reserved. The source in this project is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
 
-| Package | License | Copyright |
-|---------|---------|-----------|
-| | | |
+Each project lists its packages, versions, licenses and source links in its own documentation:
+
+| Project | Package licenses |
+|---|---|
+| `ecg12-afib` | [projects/ecg12-afib/docs/third-party-licenses.md](projects/ecg12-afib/docs/third-party-licenses.md) |
+
+Repository tooling (not shipped): the Pages build uses [`nh3`](https://github.com/messense/nh3) 0.3.7 (MIT) to sanitize rendered HTML.

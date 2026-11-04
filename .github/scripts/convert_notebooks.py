@@ -6,6 +6,8 @@ import markdown
 import glob
 import html
 
+from sanitize_html import clean   # same folder: the allowlist every rendered fragment goes through
+
 
 def parse_databricks_notebook(filepath):
     """Parse a Databricks .py notebook format into cells"""
@@ -65,10 +67,11 @@ def convert_to_html_fragment(filepath):
     for i, cell in enumerate(cells):
         if cell['type'] == 'markdown':
             # Convert markdown to HTML using nbconvert structure
-            md_html = markdown.markdown(
-                cell['content'], 
+            # Sanitized: raw HTML in a Markdown cell cannot add script to the page
+            md_html = clean(markdown.markdown(
+                cell['content'],
                 extensions=['fenced_code', 'tables', 'nl2br', 'toc']
-            )
+            ))
             html_content.append(f'''<div class="cell border-box-sizing text_cell rendered">
 <div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
@@ -91,23 +94,27 @@ def convert_to_html_fragment(filepath):
 </div>
 </div>''')
     
-    # Return just the content fragment (no full HTML document)
+    # Return just the content fragment (no full HTML document); __main__ collects the fragments
+    # into notebook_fragments.json, which publish.yaml reads
     fragment_content = '\n'.join(html_content)
-    
-    # Write fragment to temp file for the main script to read
-    temp_path = f"temp_{name_without_ext}_fragment.html"
-    with open(temp_path, 'w') as f:
-        f.write(fragment_content)
-    
     return name_without_ext, fragment_content
 
 
+def is_databricks_notebook(filepath):
+    """Databricks .py source notebooks start with this header line; other .py files are code."""
+    with open(filepath, 'r') as f:
+        return f.readline().strip() == "# Databricks notebook source"
+
+
 if __name__ == "__main__":
-    # Process all .py files in notebooks directory
+    # Every Databricks .py notebook under projects/<project>/, named <project>__<notebook>
     notebook_data = {}
-    for py_file in glob.glob('notebooks/*.py'):
+    for py_file in sorted(glob.glob('projects/*/**/*.py', recursive=True)):
+        if 'node_modules' in py_file.split(os.sep) or not is_databricks_notebook(py_file):
+            continue
         name, fragment = convert_to_html_fragment(py_file)
-        notebook_data[name] = fragment
+        project = py_file.split(os.sep)[1]
+        notebook_data[f"{project}__{name}"] = fragment
         print(f"Converted {py_file} to HTML fragment")
     
     # Write notebook data to a JSON file for the main script

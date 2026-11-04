@@ -1,0 +1,58 @@
+[project]
+name = "ecg-demo-react"
+dynamic = ["version"]
+description = "ECG/AFib 12-lead demo app (APX: React + FastAPI)"
+readme = "README.md"
+# Databricks License: see LICENSE.md at the repository root (PEP 639 license-files paths can't use "..").
+license = "LicenseRef-Databricks"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.119.0",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.11.0",
+    "python-dotenv>=1.2",
+    "starlette>=1.2",
+    "uvicorn>=0.37.0",
+    "databricks-sdk>=0.74.0",
+    # ECG generation (server-side) — pin numpy<2 to avoid the neurokit2 ABI break (pandas/pyarrow).
+    "numpy==1.26.4",
+    "scipy>=1.11,<1.14",
+    "neurokit2==0.2.12",
+    "PyWavelets==1.4.1",
+]
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.12",
+]
+
+[tool.apx.metadata]
+app-name = "ecg-demo-react"
+app-slug = "ecg_demo_react"
+app-entrypoint = "ecg_demo_react.backend.app:app"
+api-prefix = "/api"
+metadata-path = "src/ecg_demo_react/_metadata.py"
+
+[tool.apx.ui]
+root = "src/ecg_demo_react/ui"
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+fallback-version = "0.0.0"
+
+[tool.hatch.build.hooks.version]
+path = "src/ecg_demo_react/_version.py"
+template = '''
+version = "{version}"
+'''
+
+[tool.hatch.build]
+artifacts = ["src/ecg_demo_react/__dist__", "src/ecg_demo_react/_metadata.py"]
+exclude = ["src/ecg_demo_react/ui"]

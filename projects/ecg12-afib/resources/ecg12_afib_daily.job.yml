@@ -1,0 +1,63 @@
+# DAILY job: one day's new 12-lead batch through the triage -> classify cascade (the batch path:
+# the champion models are loaded from Unity Catalog and score the batch on the driver, not via
+# the endpoints). The day's batch is SIMULATED incoming data: 06_ generates synthetic ECGs +
+# patient records in place of a real ingestion step (nothing is ingested).
+#   06_generate_batch_data -> batch_data_12l_<date>  (simulated)              standard serverless
+#   07_arr_triage          -> arr_triaged_12l_<date> + that date's rows of arr_triage_history_12l
+#                             (bio_ecg12_arr)                                 standard serverless, ML v5
+#   08_afib_classify       -> dailyOrweekly_arr_afib_inference_12l, that date's rows (bio_ecg12_afib)
+#                                                                             standard serverless, ML v5
+# Needs the SETUP job's models (ecg12_afib_setup.job.yml) to exist with a champion alias.
+# Tasks communicate only through Delta tables. Every task reads the same `run_date` job
+# parameter (default: the run's start date, UTC), so a run that crosses midnight stays on one
+# date; to backfill, run the job with run_date=YYYY-MM-DD. Re-running a date does not duplicate rows.
+resources:
+  jobs:
+    ecg12_afib_daily:
+      # Both targets use mode: development, which prefixes "[dev <user>]" and deploys schedules paused.
+      name: biosignals_ecg12_afib_daily
+
+      # Job parameters are passed to every task's notebook widgets of the same name.
+      parameters:
+        - name: run_date
+          default: "{{job.start_time.iso_date}}"
+        - name: catalog_name
+          default: ${var.catalog}
+        - name: schema_name
+          default: ${var.schema}
+
+      # Daily at 06:00 UTC once unpaused: unpause it in the Jobs UI after the SETUP job and one
+      # DAILY run have succeeded.
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+
+      # Standard serverless ML v5 environment (torch, mlflow) for the two scoring tasks.
+      environments:
+        - environment_key: ml_v5
+          spec:
+            base_environment: databricks_ml_v5
+
+      tasks:
+        # Stands in for ingestion: synthetic data, so swap this task for a real ingestion step
+        # that lands the same batch_data_12l_<date> columns when adapting the demo.
+        - task_key: simulate_incoming_batch
+          description: "SIMULATED incoming data, not real ingestion: generates the day's synthetic 12-lead ECGs + synthetic patient records into batch_data_12l_<date>."
+          notebook_task:
+            notebook_path: ../workflow/06_generate_batch_data.py
+
+        - task_key: arr_triage
+          depends_on:
+            - task_key: simulate_incoming_batch
+          notebook_task:
+            notebook_path: ../workflow/07_arr_triage.py
+          environment_key: ml_v5
+
+        # Same standard serverless ML environment as arr_triage (no GPU, no classic cluster).
+        - task_key: afib_classify
+          depends_on:
+            - task_key: arr_triage
+          notebook_task:
+            notebook_path: ../workflow/08_afib_classify.py
+          environment_key: ml_v5

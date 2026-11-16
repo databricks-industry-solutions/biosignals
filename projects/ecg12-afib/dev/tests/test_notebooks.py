@@ -306,7 +306,8 @@ def test_model_code_is_inline_and_self_contained(name):
 @pytest.mark.parametrize("name", sorted(TRAINING))
 def test_pyfunc_picks_device_at_load(name):
     """The wrapper loads onto whichever device is present (GPU if any, else CPU) instead of a
-    hard-coded one, moves inputs there, and brings outputs back to CPU before numpy."""
+    hard-coded one, says which it picked once loaded, moves inputs there, and brings outputs back
+    to CPU before numpy."""
     _, pyfunc_name = TRAINING[name]
     module = ast.parse(_python_source(WORKFLOW / name))
     (cls,) = [n for n in module.body if isinstance(n, ast.ClassDef) and n.name == pyfunc_name]
@@ -314,6 +315,8 @@ def test_pyfunc_picks_device_at_load(name):
     load, predict = methods["load_context"], methods["predict"]
     assert "self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')" in load
     assert "map_location=self._device" in load and ".to(self._device)" in load
+    loaded = "print(f'{type(self).__name__} loaded on {self._device}')"
+    assert load.index(".to(self._device).eval()") < load.index(loaded)    # logged after the move
     assert ".to(self._device)" in predict and ".cpu().numpy()" in predict
     device_strings = [n.value for n in ast.walk(cls) if isinstance(n, ast.Constant) and n.value in ("cpu", "cuda")]
     assert device_strings == ["cuda", "cpu"], f"{pyfunc_name}: device hard-coded outside the load-time pick"
@@ -390,4 +393,6 @@ def test_inline_model_serves_without_common(name, tmp_path):
         assert "array (3, 2) True" in result.stdout
     assert "flat_equal True" in result.stdout
     assert "device_ok True" in result.stdout                      # model sits on the device it picked
+    expected = "cuda" if torch.cuda.is_available() else "cpu"
+    assert f"{pyfunc_name} loaded on {expected}" in result.stdout.splitlines()   # load_context says so
     assert "numpy_out ['ndarray float32']" in result.stdout        # outputs come back as CPU numpy

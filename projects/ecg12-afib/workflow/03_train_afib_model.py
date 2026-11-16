@@ -134,6 +134,7 @@ class AfibModelPyfunc(mlflow.pyfunc.PythonModel):
             torch.load(context.artifacts["state_dict"], map_location=self._device, weights_only=True)
         )
         self._model.to(self._device).eval()
+        print(f"{type(self).__name__} loaded on {self._device}")
 
     # Temperature scaling (T>1) softens the softmax so p(AFib) spans a realistic RANGE instead of
     # snapping to ~0/1. Monotonic -> the 0.5 decision boundary (and accuracy) is unchanged.

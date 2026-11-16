@@ -231,6 +231,8 @@ def test_remove_after_tags_the_jobs_with_no_date_committed():
     serve = "\n".join("" if line.startswith("# MAGIC") else line
                       for line in (DEMO_ROOT / "workflow" / "05_serve_endpoints.py").read_text().splitlines())
     assert 'dbutils.widgets.text("remove_after", "", ' in serve               # optional: empty is valid
+    # Read from the parameter, and only there: a hard-coded value can't silently disable the tagging.
+    assert re.findall(r"^remove_after\s*=.*$", serve, re.MULTILINE) == ['remove_after = dbutils.widgets.get("remove_after").strip()']
     check = 'if remove_after and not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", remove_after):'
     assert check in serve and serve.index(check) < serve.index("full, ver = deploy(model_name, endpoint_name, existing)")
     tag = 'w.serving_endpoints.patch(name=endpoint_name, add_tags=[EndpointTag(key="removeAfter", value=remove_after)])'

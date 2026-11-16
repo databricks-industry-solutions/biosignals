@@ -136,6 +136,7 @@ class ArrModelPyfunc(mlflow.pyfunc.PythonModel):
             torch.load(context.artifacts["state_dict"], map_location=self._device, weights_only=True)
         )
         self._model.to(self._device).eval()
+        print(f"{type(self).__name__} loaded on {self._device}")
 
     def predict(self, context, model_input):
         X = torch.from_numpy(_coerce_ecg(model_input)).to(self._device)

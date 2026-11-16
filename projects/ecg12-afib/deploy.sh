@@ -57,8 +57,9 @@ Options:
   --viewer-group GROUP        group that may view the dashboard and use the app (default: users)
   --embed-credentials BOOL    true (default, synthetic data only): dashboard viewers query with the
                               deployer's credentials; false: with their own grants (real data)
-  --remove-after YYYY-MM-DD   tag both jobs removeAfter=YYYY-MM-DD, for a workspace whose cleanup
-                              automation deletes resources after that date (default: no date)
+  --remove-after YYYY-MM-DD   tag both jobs and both serving endpoints removeAfter=YYYY-MM-DD, for a
+                              workspace whose cleanup automation deletes resources after that date
+                              (default: no date)
   --run-daily                 also run the DAILY job once after SETUP
   --skip-embed-allowlist      do not change the dashboard-embedding allowlist (not a workspace
                               admin); the script prints the domain an admin must add

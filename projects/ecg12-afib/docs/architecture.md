@@ -58,7 +58,7 @@ the endpoints, so live requests show up in the request-log tables and batch scor
 | `02_train_arr_model` | SETUP → `train_arr_model` (after 01) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) |
 | `03_train_afib_model` | SETUP → `train_afib_model` (after 01, parallel with 02) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_afib` → `@challenger` | serverless GPU (A10, AI v5) |
 | `04_validate_and_promote` | SETUP → `validate_and_promote` (after 02 + 03) | gate run (same experiment) with hold-out metrics + evaluation artifacts; both pass → `@champion` moves to the challengers, else the task fails | serverless GPU (A10, AI v5) |
-| `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `<endpoint_prefix>_arr`, `<endpoint_prefix>_afib` at `@champion` (stops if one already serves another deployment's model) + inference tables `<model>_payload` | standard serverless |
+| `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `<endpoint_prefix>_arr`, `<endpoint_prefix>_afib` at `@champion` (stops if one already serves another deployment's model) + inference tables `<model>_payload` + AI Gateway usage tracking | standard serverless |
 | `06_generate_batch_data` | DAILY → `simulate_incoming_batch` | (stops first unless `ecg12_afib_deployment` names this deployment) `batch_data_12l_<YYYYMMDD>`: simulated incoming data, not real ingestion (acquisition times spread over the clinic day) + sample plot | standard serverless |
 | `07_arr_triage` | DAILY → `arr_triage` (after 06) | `arr_triaged_12l_<YYYYMMDD>` and that date's rows of `arr_triage_history_12l` (scored on the driver) | standard serverless, ML v5 |
 | `08_afib_classify` | DAILY → `afib_classify` (after 07) | that date's rows of `dailyOrweekly_arr_afib_inference_12l` (scored on the driver) | standard serverless, ML v5 |
@@ -95,6 +95,8 @@ in one Delta transaction; `uc_io.write_date_slice` refuses any existing table wi
   the app and so add rows. That is fine for this synthetic data; if you adapt the project to real
   data, treat the two payload tables as patient data (limit who can `SELECT` them, and narrow
   `viewer_group`).
+  AI Gateway usage tracking is on as well: a usage record for every request lands in the system
+  table `system.serving.endpoint_usage`, which only account admins can query unless one grants access.
 
 **Scale-to-zero and the app.** Both endpoints scale to zero when idle, and waking one took 89 s and
 130 s when this demo was tested. So every endpoint call from the app is bounded by

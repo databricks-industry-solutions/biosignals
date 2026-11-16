@@ -17,7 +17,7 @@ export `BUNDLE_VAR_<name>`); `bundle validate` refuses to run without the requir
 | `app_name` | no | `ecg12-demo` | Name of the Databricks App (`full` target). Lowercase letters, digits and hyphens, at most 30 characters. Override it if that name is already taken in your workspace (app names are workspace-wide) |
 | `viewer_group` | no | `users` | Group granted `CAN_READ` on the dashboard and `CAN_USE` on the app |
 | `embed_credentials` | no | `true` | `true`: the published dashboard runs every viewer's queries with the deploying identity's credentials (fine for this synthetic data only). **Set `false` if you adapt the project to real data**, and grant the viewers access ([Dashboard](dashboard.md)) |
-| `remove_after` | no | empty | Expiry date `YYYY-MM-DD`, set on both jobs as the tag `removeAfter`; [Expiry tag](#expiry-tag-removeafter) |
+| `remove_after` | no | empty | Expiry date `YYYY-MM-DD`, set on both jobs and both serving endpoints as the tag `removeAfter`; [Expiry tag](#expiry-tag-removeafter) |
 
 The workspace itself comes from your Databricks CLI profile (`-p <profile>`); no host or profile
 is committed. Catalog and schema names go into SQL and model names unquoted, so the jobs and
@@ -27,20 +27,27 @@ hyphens, but only inside backticks).
 ### Expiry tag (`removeAfter`)
 
 Some workspaces run cleanup automation that deletes resources once the date in their
-`removeAfter` tag (`YYYY-MM-DD`) has passed. To have it remove this demo's jobs, pass the date:
+`removeAfter` tag (`YYYY-MM-DD`) has passed. To have it remove this demo's jobs and serving
+endpoints, pass the date:
 `--var remove_after=<YYYY-MM-DD>` (or `BUNDLE_VAR_remove_after`, or `deploy.sh --remove-after
 <YYYY-MM-DD>`). The bundle sets it as `presets.tags`, so every bundle resource that takes tags
 gets it: here the two jobs (next to the `dev` tag that `mode: development` adds). The tag is
 opt-in: the default is empty, so the jobs carry `removeAfter` with an empty value, which names no
 date and schedules nothing for removal. A workspace without such automation can ignore the variable.
 
+The two serving endpoints get the tag too, from the SETUP job: its `05_` creates them through the
+SDK, not the bundle, so the job passes the date to it as the parameter `remove_after`, and `05_` tags
+both endpoints `removeAfter=<date>`. It checks the format first and stops, before changing any
+endpoint, on anything but `YYYY-MM-DD`. With the default empty value it adds no tag and leaves one
+set by an earlier run as it is (delete that one in the endpoint's settings, or run SETUP with a new date).
+
 To change the date later, redeploy with the new one: `databricks bundle deploy --var
 remove_after=<YYYY-MM-DD>` (plus your usual `-t`, `-p` and `--var` values) updates the jobs' tags
-in place, without re-running the SETUP job (`deploy.sh` would run it again). Like every variable,
-pass it on each deploy: a deploy without it puts the empty value back.
+in place, without re-running the SETUP job (`deploy.sh` would run it again). The endpoints' tag
+changes only when the SETUP job runs again (it then passes the new date to `05_`). Like every
+variable, pass it on each deploy: a deploy without it puts the empty value back.
 
-The tag does not reach the two serving endpoints (the SETUP job's `05_` creates them through the
-SDK, not the bundle), the app and the dashboard (bundle apps and dashboards take no tags), or the
+The tag does not reach the app and the dashboard (bundle apps and dashboards take no tags), or the
 MLflow experiment, schema, tables and models. Remove those as [Teardown](#teardown) describes.
 
 ### One schema per deployment

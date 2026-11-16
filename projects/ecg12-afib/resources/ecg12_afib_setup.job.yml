@@ -9,7 +9,8 @@
 #                                to them, else the task fails and the job stops here
 #                                                                                 serverless GPU (A10 / AI v5)
 #   05_serve_endpoints        -> endpoints <endpoint_prefix>_arr + _afib at @champion, AI Gateway
-#                                inference tables                                 standard serverless
+#                                inference tables + usage tracking (+ the removeAfter tag when
+#                                remove_after is set)                             standard serverless
 # The DAILY job (ecg12_afib_daily.job.yml) scores with the champion models; run this job first.
 # Model names come from common/config.py; the catalog, schema, endpoint prefix and MLflow experiment
 # from the bundle variables (job parameters catalog_name / schema_name / endpoint_prefix /
@@ -35,6 +36,10 @@ resources:
         # The one MLflow experiment the training (02_, 03_) and gate (04_) runs log to.
         - name: mlflow_experiment
           default: ${var.mlflow_experiment}
+        # Optional expiry date: 05_serve_endpoints tags both endpoints removeAfter=<date> when set
+        # (presets.tags reaches only bundle resources such as this job, not SDK-created endpoints).
+        - name: remove_after
+          default: ${var.remove_after}
         # This deployment's identity, <workspace id>:<bundle root path>: the workspace id is filled in
         # when the job runs, the bundle's folder when it is deployed. Same value in the DAILY job.
         - name: deployment_id

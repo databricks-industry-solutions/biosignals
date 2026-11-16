@@ -238,6 +238,19 @@ def test_serving_never_takes_over_another_deployments_endpoint():
     assert "config.payload_table(model_name, catalog, schema)" in code
 
 
+def test_serving_enables_usage_tracking_in_the_one_ai_gateway_call():
+    """put_ai_gateway replaces the endpoint's whole AI Gateway config, so 05_'s single call per
+    endpoint passes both the inference table and usage tracking (enabled); a second call with only
+    one of them would switch the other off."""
+    code = _python_source(WORKFLOW / "05_serve_endpoints.py")
+    assert code.count("w.serving_endpoints.put_ai_gateway(") == 1
+    call = code[code.index("w.serving_endpoints.put_ai_gateway("):]
+    call = call[:call.index("\n    )\n")]
+    assert "inference_table_config=AiGatewayInferenceTableConfig(" in call
+    assert "usage_tracking_config=AiGatewayUsageTrackingConfig(enabled=True)" in call
+    assert "rate_limits=" not in call and "guardrails=" not in call
+
+
 def test_gate_logs_holdout_evaluation_artifacts_with_the_synthetic_caption():
     """04_ logs a confusion matrix, ROC + precision-recall curves, a per-class table and a README per
     model from the scores it already computed (one scoring pass), each carrying the caption."""

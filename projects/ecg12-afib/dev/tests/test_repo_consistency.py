@@ -214,7 +214,9 @@ def test_deploy_script_is_valid_bash_and_reads_endpoint_names_from_config():
 
 def test_remove_after_tags_the_jobs_with_no_date_committed():
     """remove_after (empty by default: no date ships) is the removeAfter tag on every taggable bundle
-    resource, set once in presets.tags; deploy.sh --remove-after forwards a YYYY-MM-DD date to it."""
+    resource, set once in presets.tags; deploy.sh --remove-after forwards a YYYY-MM-DD date to it.
+    The SDK-created serving endpoints get it from the SETUP job: 05_ checks the date's format before
+    changing any endpoint, tags both endpoints only when it is set, and never deletes the tag."""
     bundle = _bundle()
     variable = bundle["variables"]["remove_after"]
     assert variable["default"] == "" and "type" not in variable          # a plain string: --var / BUNDLE_VAR_
@@ -223,6 +225,19 @@ def test_remove_after_tags_the_jobs_with_no_date_committed():
     assert all("presets" not in target for target in bundle["targets"].values())
     for path, job in _jobs().values():
         assert "tags" not in job, path.name                     # the jobs take presets.tags as they are
+    setup, daily = _jobs()["ecg12_afib_setup"][1], _jobs()["ecg12_afib_daily"][1]
+    assert {p["name"]: p["default"] for p in setup["parameters"]}["remove_after"] == "${var.remove_after}"
+    assert "remove_after" not in {p["name"] for p in daily["parameters"]}      # DAILY creates no endpoint
+    serve = "\n".join("" if line.startswith("# MAGIC") else line
+                      for line in (DEMO_ROOT / "workflow" / "05_serve_endpoints.py").read_text().splitlines())
+    assert 'dbutils.widgets.text("remove_after", "", ' in serve               # optional: empty is valid
+    check = 'if remove_after and not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", remove_after):'
+    assert check in serve and serve.index(check) < serve.index("full, ver = deploy(model_name, endpoint_name, existing)")
+    tag = 'w.serving_endpoints.patch(name=endpoint_name, add_tags=[EndpointTag(key="removeAfter", value=remove_after)])'
+    assert serve.count(tag) == 1 and "delete_tags" not in serve
+    tagging = serve[serve.index("\nif remove_after:\n"):]
+    assert tagging.index("for _, endpoint_name in SERVED:") < tagging.index(tag) < tagging.index("\nelse:\n")
+    assert serve.index("w.serving_endpoints.put_ai_gateway(") < serve.index(tag)     # after the endpoints exist
     # No committed file sets the tag to a date (the docs show a placeholder).
     dated = re.compile(r"remove[_-]?after\W{0,4}\d{4}-\d{2}-\d{2}", re.IGNORECASE)
     for path in _project_files():

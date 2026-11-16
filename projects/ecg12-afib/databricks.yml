@@ -70,8 +70,8 @@ variables:
     description: >-
       Optional expiry date (YYYY-MM-DD) put on both jobs as the tag removeAfter, for workspaces whose
       cleanup automation deletes resources after that date. Empty by default: the jobs then carry
-      removeAfter with an empty value, which names no date. The serving endpoints, the app and the
-      dashboard do not get the tag (docs/deploy.md).
+      removeAfter with an empty value, which names no date. The SETUP job also tags both serving
+      endpoints with a set date; the app and the dashboard do not get the tag (docs/deploy.md).
     default: ""
 
 # Tags for every bundle resource that takes tags (here the two jobs; apps and dashboards take none).

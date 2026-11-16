@@ -129,16 +129,18 @@ def _coerce_ecg(model_input):
 class ArrModelPyfunc(mlflow.pyfunc.PythonModel):
     """Loads ArrCNN weights from the logged state_dict; predicts abnormal prob/flag."""
     def load_context(self, context):
+        # Loads on GPU when present, otherwise CPU (Model Serving and the app run CPU).
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._model = ArrCNN()
         self._model.load_state_dict(
-            torch.load(context.artifacts["state_dict"], map_location="cpu", weights_only=True)
+            torch.load(context.artifacts["state_dict"], map_location=self._device, weights_only=True)
         )
-        self._model.eval()
+        self._model.to(self._device).eval()
 
     def predict(self, context, model_input):
-        X = torch.from_numpy(_coerce_ecg(model_input))
+        X = torch.from_numpy(_coerce_ecg(model_input)).to(self._device)
         with torch.no_grad():
-            prob = torch.softmax(self._model(X), dim=1)[:, 1].numpy()
+            prob = torch.softmax(self._model(X), dim=1)[:, 1].cpu().numpy()
         return pd.DataFrame({"arr_prob": prob, "arr_flag": (prob >= ARR_FLAG_THRESHOLD).astype("float32")})
 
 # COMMAND ----------

@@ -290,6 +290,23 @@ def test_model_code_is_inline_and_self_contained(name):
         assert "AFIB_TEMPERATURE = float(config.AFIB_TEMPERATURE)" in path.read_text()
 
 
+@pytest.mark.parametrize("name", sorted(TRAINING))
+def test_pyfunc_picks_device_at_load(name):
+    """The wrapper loads onto whichever device is present (GPU if any, else CPU) instead of a
+    hard-coded one, moves inputs there, and brings outputs back to CPU before numpy."""
+    _, pyfunc_name = TRAINING[name]
+    module = ast.parse(_python_source(WORKFLOW / name))
+    (cls,) = [n for n in module.body if isinstance(n, ast.ClassDef) and n.name == pyfunc_name]
+    methods = {f.name: ast.unparse(f) for f in cls.body if isinstance(f, ast.FunctionDef)}
+    load, predict = methods["load_context"], methods["predict"]
+    assert "self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')" in load
+    assert "map_location=self._device" in load and ".to(self._device)" in load
+    assert ".to(self._device)" in predict and ".cpu().numpy()" in predict
+    device_strings = [n.value for n in ast.walk(cls) if isinstance(n, ast.Constant) and n.value in ("cpu", "cuda")]
+    assert device_strings == ["cuda", "cpu"], f"{pyfunc_name}: device hard-coded outside the load-time pick"
+    assert ".cuda()" not in ast.unparse(cls)
+
+
 # --- serving check: pickle by value, load where `common` does not exist --------------------
 
 _LOAD_AND_PREDICT = textwrap.dedent("""
@@ -316,6 +333,12 @@ _LOAD_AND_PREDICT = textwrap.dedent("""
     else:
         print("array", np.asarray(out).shape, bool(np.allclose(np.asarray(out).sum(axis=1), 1.0)))
     print("flat_equal", bool(np.allclose(np.asarray(out), np.asarray(flat))))
+    import torch
+    expected = "cuda" if torch.cuda.is_available() else "cpu"
+    params = {p.device.type for p in model._model.parameters()}
+    print("device_ok", model._device.type == expected and params == {expected})
+    arrays = [out[c].to_numpy() for c in out.columns] if isinstance(out, pd.DataFrame) else [out]
+    print("numpy_out", sorted({f"{type(a).__name__} {a.dtype}" for a in arrays}))
 """)
 
 
@@ -351,3 +374,5 @@ def test_inline_model_serves_without_common(name, tmp_path):
     else:
         assert "array (3, 2) True" in result.stdout
     assert "flat_equal True" in result.stdout
+    assert "device_ok True" in result.stdout                      # model sits on the device it picked
+    assert "numpy_out ['ndarray float32']" in result.stdout        # outputs come back as CPU numpy

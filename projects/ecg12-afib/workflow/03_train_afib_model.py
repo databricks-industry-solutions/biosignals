@@ -127,21 +127,23 @@ def _coerce_ecg(model_input):
 class AfibModelPyfunc(mlflow.pyfunc.PythonModel):
     """Loads AfibCNN weights; returns a (n, 2) array [p_not_afib, p_afib]."""
     def load_context(self, context):
+        # Loads on GPU when present, otherwise CPU (Model Serving and the app run CPU).
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._model = AfibCNN()
         self._model.load_state_dict(
-            torch.load(context.artifacts["state_dict"], map_location="cpu", weights_only=True)
+            torch.load(context.artifacts["state_dict"], map_location=self._device, weights_only=True)
         )
-        self._model.eval()
+        self._model.to(self._device).eval()
 
     # Temperature scaling (T>1) softens the softmax so p(AFib) spans a realistic RANGE instead of
     # snapping to ~0/1. Monotonic -> the 0.5 decision boundary (and accuracy) is unchanged.
     TEMPERATURE = AFIB_TEMPERATURE
 
     def predict(self, context, model_input):
-        X = torch.from_numpy(_coerce_ecg(model_input))
+        X = torch.from_numpy(_coerce_ecg(model_input)).to(self._device)
         with torch.no_grad():
             logits = self._model(X) / self.TEMPERATURE
-            probs = torch.softmax(logits, dim=1).numpy()
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
         return probs  # (n, 2): [p_not_afib, p_afib]
 
 # COMMAND ----------

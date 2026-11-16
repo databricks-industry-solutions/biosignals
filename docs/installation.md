@@ -10,8 +10,14 @@ Databricks App).
 
 <img width="1726" height="677" alt="Clone the repository into the workspace as a Git folder" src="https://github.com/user-attachments/assets/55b1729f-ad07-420e-a271-843266abfb71" />
 
-2. Open the project's `databricks.yml` in the Asset Bundle Editor and set the variables its
-   README lists as required.
+2. Set the variables the project's README lists as required, without editing the committed
+   `databricks.yml`: in the project's folder, create `.databricks/bundle/<target>/variable-overrides.json`
+   with their values, for example `{"catalog": "<catalog>", "warehouse_id": "<warehouse-id>"}`.
+   The bundle reads this file for that target, and `.databricks/` is in the repository's
+   `.gitignore`, so it never ends up in a commit. Then open the project's `databricks.yml` in the
+   Asset Bundle Editor. If the editor still reports a required variable without a value, set the
+   values under `targets.<target>.variables` in your Git folder's copy of `databricks.yml` instead,
+   and do not commit that change.
 
 <img width="1120" height="665" alt="Open the Asset Bundle Editor" src="https://github.com/user-attachments/assets/d1f91256-eb8f-4456-8d88-c0a37b1bd4c5" />
 

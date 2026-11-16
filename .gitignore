@@ -1,8 +1,9 @@
 # Databricks Asset Bundle files
 .databricks/
 
-# IDE / editor files
+# IDE / editor files and local AI-assistant state
 .vscode/
+.isaac/
 .idea/
 .cursor/
 *.code-workspace

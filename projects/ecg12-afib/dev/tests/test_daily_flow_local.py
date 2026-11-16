@@ -7,7 +7,8 @@ fake ``mlflow.pyfunc.load_model`` returning models with the real output schemas,
 score on the driver with scoring.score_driver_side. Checks the table contents each notebook writes,
 that re-running a date does not duplicate rows, and that the dashboard's SQL runs (ANSI mode, as on
 a SQL warehouse), gives the latest day's funnel and leaves the app's warm-up pings out of the live
-tiles. Skipped without a local pyspark + Java."""
+tiles, and that 06_ writes nothing unless the schema's ownership record names this deployment.
+Skipped without a local pyspark + Java."""
 import datetime as dt
 import json
 import sys
@@ -16,11 +17,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from common import config, uc_io
 from conftest import DEMO_ROOT, TEST_CATALOG
 
 RUN_DATES = ("2026-10-29", "2026-10-29", "2026-10-30")      # a date, its re-run, the next date
+# This deployment (its SETUP job recorded it as the schema's owner) and a second one.
+DEPLOYMENT = "1234:/Workspace/Users/tester/.bundle/biosignals-ecg12-afib/no_app"
+OTHER_DEPLOYMENT = "1234:/Workspace/Users/someone/.bundle/biosignals-ecg12-afib/no_app"
 DASHBOARD = DEMO_ROOT / "dashboards" / "ecg12_afib.lvdash.json"
 
 
@@ -55,8 +60,13 @@ def _fake_writes(monkeypatch):
         spark.tables[table] = kept.unionByName(new, allowMissingColumns=True)
         return "replace"
 
+    def create_table(spark, df, table):                     # create only, never replace
+        assert table not in spark.tables, table
+        overwrite_table(spark, df, table)
+
     monkeypatch.setattr(uc_io, "overwrite_table", overwrite_table)
     monkeypatch.setattr(uc_io, "write_date_slice", write_date_slice)
+    monkeypatch.setattr(uc_io, "create_table", create_table)
 
 
 def _fake_mlflow(monkeypatch):
@@ -181,14 +191,30 @@ def test_daily_notebooks_end_to_end_rerun_safe_and_the_dashboard_queries_run(spa
     _fake_writes(monkeypatch)
     loads = _fake_mlflow(monkeypatch)
     uc = LocalUC(spark)
+    owner = config.uc_name(config.DEPLOYMENT_TABLE, TEST_CATALOG)
+    other_day = "2026-10-31"
+    other_day_table = config.daily_table(config.BATCH_TABLE_PREFIX, dt.date.fromisoformat(other_day), TEST_CATALOG)
+
+    # DAILY before any SETUP: no deployment owns the schema yet, so 06_ stops before writing.
+    with pytest.raises(uc_io.SchemaOwnershipError, match="no deployment owns it yet"):
+        _run_notebook("06_generate_batch_data.py", uc, {config.RUN_DATE_PARAM: other_day, "catalog_name": TEST_CATALOG,
+                                                        config.DEPLOYMENT_ID_PARAM: DEPLOYMENT})
+    assert uc.tables == {}
+    assert uc_io.claim_schema(uc, owner, DEPLOYMENT) is True       # what SETUP's 01_ does first (real Spark rows)
 
     triaged = {}
     for run_date in RUN_DATES:
-        widgets = {config.RUN_DATE_PARAM: run_date, "catalog_name": TEST_CATALOG}
+        widgets = {config.RUN_DATE_PARAM: run_date, "catalog_name": TEST_CATALOG, config.DEPLOYMENT_ID_PARAM: DEPLOYMENT}
         for name in ("06_generate_batch_data.py", "07_arr_triage.py", "08_afib_classify.py"):
             _run_notebook(name, uc, widgets)
         day = dt.date.fromisoformat(run_date)
         triaged[day] = _check_day(uc, day)                     # also after the re-run: no duplicates
+
+    # Another deployment's DAILY job in this schema stops in 06_, before writing anything.
+    with pytest.raises(uc_io.SchemaOwnershipError, match="belongs to another deployment"):
+        _run_notebook("06_generate_batch_data.py", uc, {config.RUN_DATE_PARAM: other_day, "catalog_name": TEST_CATALOG,
+                                                        config.DEPLOYMENT_ID_PARAM: OTHER_DEPLOYMENT})
+    assert other_day_table not in uc.tables
 
     # champion was resolved to version 3, and that exact version (never "@champion") was loaded.
     assert set(loads) == {f"models:/{config.uc_name(name, TEST_CATALOG)}/3"

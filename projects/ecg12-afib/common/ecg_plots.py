@@ -3,7 +3,8 @@
 
 * ``rhythm_strips``: one lead (II by default), 10 s, for one ECG of each rhythm class, stacked
   on one millivolt scale. This is the difference the models learn: regular and 60-100 bpm
-  (NSR), irregularly irregular with no P waves (AFib), regular but fast (Other).
+  (NSR), irregularly irregular with no P waves and a fibrillating baseline (AFib), regular but
+  fast (Other).
 * ``twelve_lead``: one ECG in the standard 6 x 2 layout (limb leads left, chest leads right),
   every lead on the same millivolt scale; derived leads are marked "(derived)".
 

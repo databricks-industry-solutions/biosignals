@@ -10,7 +10,8 @@ Consistency rules:
     days always has the same record;
   * ``bmi`` is computed from the stored height and weight;
   * ``heart_rate_bpm`` is the rate measured from the synthesized ECG, so it follows the
-    rhythm (NSR 60-100, AFib 100-160, Other/sinus tachycardia 110-160 bpm);
+    rhythm (drawn at NSR 60-100, AFib 100-160, Other/sinus tachycardia 110-160 bpm; AFib's
+    irregular beats measure below 100 bpm for a few percent of AFib ECGs);
   * ``sampling_rate_hz``, ``n_leads`` and ``duration_s`` come from the ECG array itself;
   * ``acquisition_datetime_utc`` (daily batch) falls in clinic hours of the batch date, spread
     over a morning and an afternoon peak, so a day's ECGs read like an incoming stream;

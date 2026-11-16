@@ -23,8 +23,9 @@
 # MAGIC cleared, so after a pass only `@champion` remains: **`challenger` = a candidate awaiting (or that
 # MAGIC failed) the gate; `champion` = what is served and batch-scored.** On a failure nothing moves,
 # MAGIC `@challenger` stays on the failed version for inspection, the task fails with the reasons, and the
-# MAGIC SETUP job stops before serving. Every outcome is recorded: an MLflow run with the thresholds and
-# MAGIC hold-out metrics, and tags on each model version (`validation_status`, `gate_result`,
+# MAGIC SETUP job stops before serving. Every outcome is recorded: an MLflow run (in the project
+# MAGIC experiment, the `mlflow_experiment` job parameter, like the training runs) with the thresholds and
+# MAGIC hold-out metrics, and tags on each challenger version (`validation_status`, `gate_result`,
 # MAGIC `holdout_*`). `validation_status` is `valid` or `invalid` (this model against its own
 # MAGIC thresholds), so it also works where a Unity Catalog tag policy restricts that key to those two
 # MAGIC values (Unity Catalog rejects any other value on a model version then).
@@ -32,13 +33,19 @@
 # MAGIC training notebooks set no `validation_status`: until this gate runs, the `challenger` alias is
 # MAGIC what marks a version as awaiting validation.
 # MAGIC
+# MAGIC **A re-checked champion keeps its tags.** A model that was not retrained is re-checked at its
+# MAGIC `@champion`, the version still being served. Its result is in the gate's MLflow run (and in the
+# MAGIC failure message, if it misses the thresholds), but its version tags are left as the gate that
+# MAGIC promoted it wrote them: a failed gate never tags a version that keeps serving `invalid` or
+# MAGIC `failed`. Only the challenger versions this gate decides on get the new tags.
+# MAGIC
 # MAGIC | Model | Thresholds (default) | Why |
 # MAGIC |---|---|---|
 # MAGIC | `bio_ecg12_arr` (triage) | accuracy ≥ 0.95, ROC AUC ≥ 0.98, sensitivity ≥ 0.97, specificity ≥ 0.90 | a missed abnormal ECG never reaches the AFib model, so sensitivity has the highest floor |
 # MAGIC | `bio_ecg12_afib` (classify) | accuracy ≥ 0.95, ROC AUC ≥ 0.98, sensitivity ≥ 0.95, Other called AFib ≤ 0.05 | the classifier exists to separate AFib from the other fast rhythm, sinus tachycardia |
 # MAGIC
 # MAGIC These are engineering floors for synthetic data, where a healthy model scores ~1.0 (the rhythms
-# MAGIC are trivially separable by design, see `00_overview`) and a model that predicts one class for
+# MAGIC are close to separable by design, see `00_overview`) and a model that predicts one class for
 # MAGIC everything scores ~0.67 accuracy and 0.5 ROC AUC. They are not clinical acceptance criteria.
 # MAGIC Aliases are lowercase (`champion`, `challenger`) because Unity Catalog stores them lowercase.
 # MAGIC
@@ -66,7 +73,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(".."))   # notebook working dir = workflow/
 
-from common import config, eval_plots, evaluation, scoring, uc_io
+from common import config, eval_plots, evaluation, scoring, tracking, uc_io
 from common.ecg_signal_gen import N_SAMPLES, derive_afib_truth, derive_arr_flag
 
 # COMMAND ----------
@@ -74,8 +81,10 @@ from common.ecg_signal_gen import N_SAMPLES, derive_afib_truth, derive_arr_flag
 # DBTITLE 1,Parameters (UC location from the job: catalog_name required, schema_name defaults to biosignals)
 dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
+dbutils.widgets.text(config.MLFLOW_EXPERIMENT_PARAM, "", label="mlflow_experiment (required, set by the job)")
 catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
                                                dbutils.widgets.get("schema_name"))
+mlflow_experiment = config.resolve_mlflow_experiment(dbutils.widgets.get(config.MLFLOW_EXPERIMENT_PARAM))
 
 # Per model: binary truth from the rhythm label, model output -> result columns, the
 # positive-class score, the call each model makes in production (07_ / 08_ / the app) and its
@@ -92,15 +101,18 @@ GATED = {
         "rule": f"p_afib > {config.AFIB_THRESHOLD}", "classes": ("not AFib (NSR or Other)", "AFib"),
     },
 }
-print(f"{catalog_name}.{schema_name}: gating {list(GATED)} @{config.CHALLENGER_ALIAS} -> @{config.CHAMPION_ALIAS}")
+print(f"{catalog_name}.{schema_name}: gating {list(GATED)} @{config.CHALLENGER_ALIAS} -> @{config.CHAMPION_ALIAS} | "
+      f"MLflow experiment: {mlflow_experiment}")
 
 # COMMAND ----------
 
 # DBTITLE 1,Resolve each challenger and the training-data version it was trained beside
 import mlflow
+from databricks.sdk import WorkspaceClient
 from mlflow import MlflowClient
 
 mlflow.set_registry_uri("databricks-uc")
+tracking.use_experiment(WorkspaceClient(), mlflow_experiment)   # the project experiment, not the notebook's own
 client = MlflowClient(registry_uri="databricks-uc")
 
 # The gate checks the two models as one cascade. Each model's candidate is its @challenger; a model
@@ -177,7 +189,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # On every figure and in each model's README: the synthetic classes are separable by design.
-EVAL_CAPTION = ("Synthetic hold-out data, separable by design (heart rate and RR irregularity split the classes), "
+EVAL_CAPTION = ("Synthetic hold-out data, separable by design (heart rate and RR irregularity almost fully split the classes), "
                 "so near-perfect results are expected: this shows the evaluation workflow, not skill on a hard "
                 "clinical problem.")
 EVAL_FILES = {
@@ -199,7 +211,7 @@ def log_holdout_eval(model_name, spec, resolved, holdout_table, metrics, labels,
     mlflow.log_dict({"rows": "true class", "columns": "model call", "classes": list(spec["classes"]),
                      "matrix": [[counts["tn"], counts["fp"]], [counts["fn"], counts["tp"]]], **counts,
                      "by_true_rhythm": evaluation.rhythm_call_counts(labels, called),
-                     "decision_rule": spec["rule"], "n": int(len(truth)), "note": EVAL_CAPTION},
+                     "decision_rule": spec["rule"], "n": len(truth), "note": EVAL_CAPTION},
                     f"{folder}/confusion_matrix.json")
     mlflow.log_table(pd.DataFrame(evaluation.per_class_report(truth, called, spec["classes"])),
                      artifact_file=f"{folder}/per_class_metrics.json")
@@ -242,17 +254,28 @@ def validation_status(ok):
     return "valid" if ok else "invalid"
 
 
+def rechecked(resolved):
+    """True for a model gated at its champion alias (not retrained): the version that keeps serving."""
+    return resolved.alias == config.CHAMPION_ALIAS
+
+
 with mlflow.start_run(run_name="validate_and_promote") as gate_run:
     mlflow.set_tags({"pipeline_task": "04_validate_and_promote", "validation_status": validation_status(passed)})
     for model_name, (metrics, failures) in results.items():
         resolved, table, version, champion = challengers[model_name]
-        mlflow.log_params({f"{model_name}.challenger_version": resolved.version,
+        mlflow.log_params({f"{model_name}.candidate_version": resolved.version,
+                           f"{model_name}.candidate_alias": resolved.alias,
                            f"{model_name}.previous_champion_version": champion or "none",
                            f"{model_name}.holdout_table": f"{table}@v{version}",
                            **{f"{model_name}.{k}": v for k, v in config.VALIDATION_THRESHOLDS[model_name].items()}})
         mlflow.log_metrics({f"{model_name}.holdout_{k}": v for k, v in metrics.items()})
         eval_folder = log_holdout_eval(model_name, GATED[model_name], resolved, f"{table}@v{version}", metrics,
                                        *holdout_scores[model_name])
+        if rechecked(resolved):
+            # The serving champion, re-checked beside the retrained model: this run records the result;
+            # its version tags stay those of the gate that promoted it (it keeps serving either way).
+            print(f"{resolved.info}: re-checked, not retrained; version tags left unchanged")
+            continue
         # validation_status = this model vs its own thresholds (valid / invalid); gate_result = both
         # models (passed / failed), which is what promotes.
         version_tags = {"validation_status": validation_status(not failures), "gate_result": status,
@@ -263,7 +286,13 @@ with mlflow.start_run(run_name="validate_and_promote") as gate_run:
             client.set_model_version_tag(resolved.full_name, resolved.version, key, value)
 
 if not passed:
-    reasons = {name: failures for name, (_, failures) in results.items() if failures}
+    reasons = {}
+    for name, (_, failures) in results.items():
+        if failures:
+            resolved = challengers[name][0]
+            what = (f"serving @{config.CHAMPION_ALIAS} v{resolved.version}, not retrained (keeps serving; retrain it "
+                    "or review its thresholds)" if rechecked(resolved) else f"@{resolved.alias} v{resolved.version}")
+            reasons[f"{name} {what}"] = failures
     raise RuntimeError(f"Validation gate FAILED, nothing promoted (@{config.CHAMPION_ALIAS} unchanged): {reasons}")
 
 # Both or neither: move @champion model by model; if a move fails, put back the champions already
@@ -284,7 +313,7 @@ except Exception:
 
 # Promoted: @challenger now marks nothing awaiting the gate, so it is cleared; only @champion
 # (what is served and batch-scored) remains. On a failure (above) @challenger stays on the failed
-# version, tagged validation_status=invalid, for inspection.
+# version, tagged gate_result=failed, for inspection.
 for model_name, (resolved, *_rest) in challengers.items():
     if resolved.alias == config.CHALLENGER_ALIAS:
         client.delete_registered_model_alias(resolved.full_name, config.CHALLENGER_ALIAS)

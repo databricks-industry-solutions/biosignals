@@ -39,9 +39,11 @@ dashboards, its own bundle (`databricks.yml`).
 
 ## Installation Guidelines
 
-Clone this repository into your workspace as a Git folder, open the project's `databricks.yml` in
-the Asset Bundle Editor, set its required variables, click "Deploy", then run its jobs from the
-Deployments tab. Step-by-step with screenshots: [docs/installation.md](docs/installation.md).
+Clone this repository into your workspace as a Git folder, set the project's required variables
+in an uncommitted `.databricks/bundle/<target>/variable-overrides.json` file (never in the
+committed `databricks.yml`), open the project's `databricks.yml` in the Asset Bundle Editor, click
+"Deploy", then run its jobs from the Deployments tab. Step-by-step with screenshots:
+[docs/installation.md](docs/installation.md).
 
 Projects with a Databricks App also have a script that builds the app on your laptop and does the
 full install (for example `projects/ecg12-afib/deploy.sh`). Projects create billable resources;
@@ -90,7 +92,7 @@ Any issues discovered through the use of this project should be filed as GitHub 
 
 ## 📄 Third-Party Package Licenses
 
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this project is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
+&copy; 2026 Databricks, Inc. All rights reserved. The source in this project is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
 
 Each project lists its packages, versions, licenses and source links in its own documentation:
 

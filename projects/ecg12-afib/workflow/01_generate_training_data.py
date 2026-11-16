@@ -25,9 +25,16 @@
 # MAGIC `heart_rate_bpm`, and `ecg1`..`ecg12` (one ARRAY<FLOAT> per lead, mV, 2500 samples at 250 Hz, in
 # MAGIC the order I, II, III, aVR, aVL, aVF, V1..V6), the same per-lead layout as the daily batch.
 # MAGIC
+# MAGIC **One schema per deployment.** As the first task of the SETUP job it creates the schema when it
+# MAGIC does not exist yet (needs `CREATE SCHEMA` on the catalog) and, before writing anything, records
+# MAGIC which bundle deployment owns it in the one-row table **`ecg12_afib_deployment`** (first run only).
+# MAGIC The model and table names are fixed, so two deployments in one schema would overwrite each
+# MAGIC other's training data and `champion`: when the schema already belongs to another deployment, this
+# MAGIC task stops with a message asking for another schema, and the rest of the job never runs.
+# MAGIC
 # MAGIC **Compute:** standard serverless. Parameters: `catalog_name` (required: the SETUP job passes the
-# MAGIC bundle's `catalog` variable), `schema_name` (default `biosignals`). As the first task of the SETUP
-# MAGIC job it creates the schema when it does not exist yet (needs `CREATE SCHEMA` on the catalog).
+# MAGIC bundle's `catalog` variable), `schema_name` (default `biosignals`), `deployment_id` (required: the
+# MAGIC job passes `<workspace id>:<bundle root path>`).
 
 # COMMAND ----------
 
@@ -51,13 +58,19 @@ from common.ecg_signal_gen import LABEL_NAMES
 
 # COMMAND ----------
 
-# DBTITLE 1,Parameters (UC location from the job) + create the schema if needed
+# DBTITLE 1,Parameters (UC location + deployment from the job), create the schema if needed, claim it
 dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
+dbutils.widgets.text(config.DEPLOYMENT_ID_PARAM, "", label="deployment_id (required, set by the job)")
 
 catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
                                                dbutils.widgets.get("schema_name"))
+deployment_id = config.resolve_deployment_id(dbutils.widgets.get(config.DEPLOYMENT_ID_PARAM))
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog_name}`.`{schema_name}`")
+# Before anything is written: this deployment owns the schema (recorded on the first run), or stop.
+owner_table = config.uc_name(config.DEPLOYMENT_TABLE, catalog_name, schema_name)
+claimed = uc_io.claim_schema(spark, owner_table, deployment_id)
+print(f"{catalog_name}.{schema_name} {'claimed for' if claimed else 'owned by'} this deployment: {deployment_id}")
 train_table = config.uc_name(config.TRAINING_TABLE, catalog_name, schema_name)
 print(f"write: {train_table}\nsplits (ECGs, seed): {config.TRAINING_SPLITS}")
 

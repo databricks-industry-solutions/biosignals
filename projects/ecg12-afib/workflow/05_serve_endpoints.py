@@ -13,7 +13,8 @@
 # MAGIC | `<endpoint_prefix>_afib` (classify) | `bio_ecg12_afib@champion`, pinned to its version | `03_` | `04_` |
 # MAGIC
 # MAGIC **Endpoint names are workspace-wide**, unlike the models and tables (which live in this
-# MAGIC deployment's catalog.schema), so they come from the `endpoint_prefix` parameter (the bundle
+# MAGIC deployment's catalog.schema: the SETUP job's first task, `01_`, has already stopped the job if
+# MAGIC another deployment owns that schema), so they come from the `endpoint_prefix` parameter (the bundle
 # MAGIC variable of the same name, default `bio_ecg12`; `config.endpoint_names`). The first run creates
 # MAGIC both endpoints, and a re-run after a retrain + promotion moves each one to the new champion
 # MAGIC version. **An existing endpoint is updated only if it already serves this deployment's model**
@@ -21,7 +22,9 @@
 # MAGIC the task stops before changing either endpoint, asking for a unique `endpoint_prefix`.
 # MAGIC Inference tables are `<model>_payload` in the same schema (`bio_ecg12_arr_payload`,
 # MAGIC `bio_ecg12_afib_payload`, read by the dashboard's live-serving section): AI Gateway's table
-# MAGIC prefix is the model name, so the table names do not depend on the endpoint names.
+# MAGIC prefix is the model name, so the table names do not depend on the endpoint names. AI Gateway
+# MAGIC writes every request (the whole ECG) and its response (the scores) there, so these tables store
+# MAGIC every ECG the app scores; with real data, treat them as patient data.
 # MAGIC
 # MAGIC Parameters: `catalog_name` (required), `schema_name`, `endpoint_prefix`.
 

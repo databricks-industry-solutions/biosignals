@@ -1,5 +1,6 @@
 """Runs the SETUP notebooks 01 -> 02 + 03 -> 04 on a local Spark session, with real (tiny) PyTorch
-training, and checks the data-first flow and the challenger -> validation gate -> champion cycle.
+training, and checks the schema-ownership record (a second deployment in the same schema stops before
+writing), the data-first flow and the challenger -> validation gate -> champion cycle.
 
 Stand-ins: notebook globals (dbutils, display, spark), Unity Catalog tables with Delta versions (an
 in-memory list of versions per table, behind the same DESCRIBE HISTORY / VERSION AS OF SQL that
@@ -17,9 +18,15 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+from conftest import (
+    DEMO_ROOT,
+    GOVERNED_TAG_VALUES,
+    SP_EXPERIMENT,
+    TEST_CATALOG,
+    FakeTracking,
+)
 
 from common import config, uc_io
-from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES, TEST_CATALOG
 
 SMALL_SPLITS = {config.TRAIN_SPLIT: (24, 11), config.VAL_SPLIT: (12, 99), config.HOLDOUT_SPLIT: (12, 314)}
 LENIENT = {"min_accuracy": 0.0, "min_roc_auc": 0.0}
@@ -71,11 +78,15 @@ class FakeMlflow:
         self._cloudpickle = cloudpickle
         self.runs, self.registry = {}, {}
         self._active = []
+        self.tracking = FakeTracking()     # experiments + workspace folders; no home folder at first
 
     @contextmanager
     def start_run(self, run_name=None, run_id=None):
+        experiment = self.tracking.active
+        assert experiment, "no active MLflow experiment: the run would land in the notebook's own experiment"
         run_id = run_id or f"run{len(self.runs)}"
-        self.runs.setdefault(run_id, {"name": run_name, "params": {}, "metrics": [], "tags": {}, "artifacts": {}})
+        self.runs.setdefault(run_id, {"name": run_name, "experiment": experiment, "params": {}, "metrics": [],
+                                      "tags": {}, "artifacts": {}})
         self._active.append(run_id)
         try:
             yield SimpleNamespace(info=SimpleNamespace(run_id=run_id))
@@ -167,15 +178,31 @@ class FakeMlflow:
         mlflow.pyfunc, mlflow.models = pyfunc, models
         mlflow.set_registry_uri = lambda uri: None
         mlflow.MlflowClient = self.client
-        for name in ("start_run", "log_params", "log_metrics", "set_tags", "set_tag", "log_text", "log_dict",
-                     "log_table", "log_figure"):
+        for name in ("start_run", "log_params", "log_metrics", "set_tags", "set_tag", "log_text",
+                     "log_dict", "log_table", "log_figure"):
             setattr(mlflow, name, getattr(self, name))
         for name, module in {"mlflow": mlflow, "mlflow.pyfunc": pyfunc, "mlflow.models": models}.items():
             monkeypatch.setitem(sys.modules, name, module)
+        self.tracking.install(monkeypatch, mlflow)
 
 
 def _overwrite_versioned(spark, df, table, optimize=True):
     spark.versions.setdefault(table, []).append(spark.createDataFrame(df.toPandas(), df.schema))
+
+
+def _create_versioned(spark, df, table):
+    """uc_io.create_table: create only, never replace (save mode error, i.e. ErrorIfExists)."""
+    if table in spark.versions:
+        raise RuntimeError(f"[TABLE_OR_VIEW_ALREADY_EXISTS] {table}")
+    _overwrite_versioned(spark, df, table)
+
+
+# This deployment and a second one of the same bundle (another user's folder) in the same schema.
+DEPLOYMENT = "1234:/Workspace/Users/tester/.bundle/biosignals-ecg12-afib/no_app"
+OTHER_DEPLOYMENT = "1234:/Workspace/Users/someone/.bundle/biosignals-ecg12-afib/no_app"
+# The SETUP job's mlflow_experiment parameter: the bundle default as it resolves for a service
+# principal with no home folder yet (the notebooks create it).
+TEST_EXPERIMENT = SP_EXPERIMENT
 
 
 class NotebookExit(Exception):
@@ -186,11 +213,13 @@ def _exit(value):
     raise NotebookExit(value)
 
 
-def _run_notebook(name, uc):
+def _run_notebook(name, uc, deployment_id=DEPLOYMENT):
     """Runs the notebook; returns its dbutils.notebook.exit value, or None when it runs to the end."""
     import matplotlib.pyplot as plt
 
-    values = {"catalog_name": TEST_CATALOG}                 # the job parameter; the widget has no default
+    # The job parameters; these widgets have no default.
+    values = {"catalog_name": TEST_CATALOG, config.DEPLOYMENT_ID_PARAM: deployment_id,
+              config.MLFLOW_EXPERIMENT_PARAM: TEST_EXPERIMENT}
     dbutils = SimpleNamespace(
         widgets=SimpleNamespace(text=lambda key, default, label=None: values.setdefault(key, default),
                                 get=lambda key: values[key]),
@@ -199,7 +228,7 @@ def _run_notebook(name, uc):
     source = "\n".join("" if line.startswith("# MAGIC") else line
                        for line in (DEMO_ROOT / "workflow" / name).read_text().splitlines())
     try:
-        exec(compile(source, name, "exec"),
+        exec(compile(source, name, "exec"),          # noqa: S102 (runs the repo's own notebook)
              {"__name__": "__main__", "spark": uc, "dbutils": dbutils, "display": lambda df: df.collect()})
     except NotebookExit as stop:
         return stop.args[0]
@@ -212,6 +241,7 @@ def test_setup_notebooks_gate_promotes_both_or_neither(spark, monkeypatch):
     fake = FakeMlflow(pytest.importorskip("cloudpickle"))
     monkeypatch.chdir(DEMO_ROOT / "workflow")
     monkeypatch.setattr(uc_io, "overwrite_table", _overwrite_versioned)
+    monkeypatch.setattr(uc_io, "create_table", _create_versioned)
     monkeypatch.setattr(config, "TRAINING_SPLITS", SMALL_SPLITS)
     monkeypatch.setattr(config, "TRAIN_PARAMS", {**config.TRAIN_PARAMS, "epochs": 2, "batch_size": 8})
     monkeypatch.setattr(config, "VALIDATION_MIN_ROWS", SMALL_SPLITS[config.HOLDOUT_SPLIT][0])
@@ -222,10 +252,18 @@ def test_setup_notebooks_gate_promotes_both_or_neither(spark, monkeypatch):
     arr = config.uc_name(config.ARR_MODEL_NAME, TEST_CATALOG)
     afib = config.uc_name(config.AFIB_MODEL_NAME, TEST_CATALOG)
 
-    # 01: the schema (created if missing), then the training dataset, persisted with its split
-    # column (Delta version 0).
+    owner = config.uc_name(config.DEPLOYMENT_TABLE, TEST_CATALOG)
+
+    # 01: the schema (created if missing), this deployment recorded as its owner, then the training
+    # dataset, persisted with its split column (Delta version 0).
     _run_notebook("01_generate_training_data.py", uc)
     assert uc.schemas == [(TEST_CATALOG, config.SCHEMA)]
+    (record,) = uc.versions[owner]
+    assert [row[config.DEPLOYMENT_ID_COL] for row in record.collect()] == [DEPLOYMENT]
+    # A second deployment in the same schema stops before writing anything: no new training data.
+    with pytest.raises(uc_io.SchemaOwnershipError, match="belongs to another deployment"):
+        _run_notebook("01_generate_training_data.py", uc, deployment_id=OTHER_DEPLOYMENT)
+    assert len(uc.versions[table]) == 1 and len(uc.versions[owner]) == 1
     data = uc.versions[table][0].toPandas()
     assert data.groupby(config.SPLIT_COL).size().to_dict() == {s: n for s, (n, _) in SMALL_SPLITS.items()}
     assert data[config.SAMPLE_ID_COL].is_unique and len(data["ecg12"].iloc[0]) == 2500
@@ -269,6 +307,9 @@ def test_setup_notebooks_gate_promotes_both_or_neither(spark, monkeypatch):
         tags = fake.registry[name]["versions"]["1"]["tags"]
         assert (tags["validation_status"], tags["gate_result"]) == ("valid", "passed") and "holdout_roc_auc" in tags
     gate = runs_by_name(fake)["validate_and_promote"]
+    # Training and gate runs all land in the one project experiment (the mlflow_experiment parameter).
+    assert {run["experiment"] for run in fake.runs.values()} == {TEST_EXPERIMENT} and len(fake.runs) == 3
+    assert list(fake.tracking.experiments) == [TEST_EXPERIMENT] and TEST_EXPERIMENT.rpartition("/")[0] in fake.tracking.folders
     assert gate["tags"]["validation_status"] == "valid"
     assert {f"{config.ARR_MODEL_NAME}.holdout_accuracy", f"{config.AFIB_MODEL_NAME}.holdout_n",
             f"{config.AFIB_MODEL_NAME}.holdout_average_precision"} <= {k for k, _, _ in gate["metrics"]}
@@ -308,16 +349,23 @@ def test_setup_notebooks_gate_promotes_both_or_neither(spark, monkeypatch):
     monkeypatch.setattr(config, "VALIDATION_THRESHOLDS",
                         {config.ARR_MODEL_NAME: LENIENT, config.AFIB_MODEL_NAME: {"max_called_positive_rate_other": -1.0}})
     uc.reads.clear()
-    with pytest.raises(RuntimeError, match="Validation gate FAILED, nothing promoted"):
+    with pytest.raises(RuntimeError, match="Validation gate FAILED, nothing promoted") as failed:
         _run_notebook("04_validate_and_promote.py", uc)
+    # The failure names the re-checked model as the serving champion, not retrained.
+    assert f"{config.AFIB_MODEL_NAME} serving @{config.CHAMPION_ALIAS} v1, not retrained" in str(failed.value)
     assert sorted(uc.reads) == [(table, 0), (table, 1)]              # each candidate's own data version
     # Nothing moved: arr keeps its failed challenger (for inspection) and both champions stay at v1.
     assert fake.registry[arr]["aliases"] == {config.CHALLENGER_ALIAS: "2", config.CHAMPION_ALIAS: "1"}
     assert fake.registry[afib]["aliases"] == {config.CHAMPION_ALIAS: "1"}
-    # arr v2 met its own thresholds (valid) but the gate as a whole failed; afib v1 did not (invalid).
+    # arr v2 met its own thresholds (valid) but the gate as a whole failed. afib v1 missed them, but it
+    # keeps serving, so its tags stay those of the gate that promoted it; the run records the re-check.
     assert {"validation_status": "valid", "gate_result": "failed"}.items() <= fake.registry[arr]["versions"]["2"]["tags"].items()
-    assert {"validation_status": "invalid", "gate_result": "failed"}.items() <= fake.registry[afib]["versions"]["1"]["tags"].items()
-    assert runs_by_name(fake)["validate_and_promote"]["tags"]["validation_status"] == "invalid"
+    assert {"validation_status": "valid", "gate_result": "passed"}.items() <= fake.registry[afib]["versions"]["1"]["tags"].items()
+    gate = runs_by_name(fake)["validate_and_promote"]
+    assert gate["tags"]["validation_status"] == "invalid"
+    assert (gate["params"][f"{config.AFIB_MODEL_NAME}.candidate_alias"],
+            gate["params"][f"{config.ARR_MODEL_NAME}.candidate_alias"]) == (config.CHAMPION_ALIAS, config.CHALLENGER_ALIAS)
+    assert {run["experiment"] for run in fake.runs.values()} == {TEST_EXPERIMENT} and len(fake.runs) == 5
 
 
 def test_fake_registry_refuses_tag_values_the_tag_policies_do_not_allow():
@@ -326,6 +374,7 @@ def test_fake_registry_refuses_tag_values_the_tag_policies_do_not_allow():
     model-version tag, in either gate outcome."""
     fake = FakeMlflow(cloudpickle=None)
     fake.registry["m"] = {"versions": {"1": {"tags": {}}}, "aliases": {}}
+    fake.tracking.active = TEST_EXPERIMENT
     client = fake.client()
     for value in ("pending", "passed", "failed"):               # the values the notebooks used to write
         with pytest.raises(AssertionError, match="tag policy"):

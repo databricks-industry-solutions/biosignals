@@ -13,9 +13,9 @@ import types
 
 import numpy as np
 import pytest
+from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES
 
 from common import config
-from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES
 
 WORKFLOW = DEMO_ROOT / "workflow"
 NOTEBOOKS = sorted(WORKFLOW.glob("*.py"))
@@ -180,6 +180,28 @@ def test_training_reads_the_persisted_dataset_and_logs_thoroughly(name):
     assert "artifact_path=" not in code                       # deprecated in MLflow 3; name= is used
 
 
+def test_every_mlflow_run_logs_to_the_project_experiment():
+    """The notebooks that start MLflow runs (02_, 03_, 04_) read the mlflow_experiment parameter and
+    make it the active experiment with tracking.use_experiment (which creates its folder, for an
+    identity without a home folder, see test_tracking.py) before their first run, so no run lands in
+    the notebook's own experiment (deleted with the bundle). No notebook calls MLflow's experiment
+    functions itself, and none autologs, which would start runs of its own."""
+    sources = {path.name: _python_source(path) for path in NOTEBOOKS}
+    assert {name for name, code in sources.items() if "mlflow.start_run(" in code} == {*TRAINING, GATE}
+    for name in (*sorted(TRAINING), GATE):
+        code = sources[name]
+        assert ('dbutils.widgets.text(config.MLFLOW_EXPERIMENT_PARAM, "", '
+                'label="mlflow_experiment (required, set by the job)")') in code, name
+        resolved = code.index("mlflow_experiment = config.resolve_mlflow_experiment("
+                              "dbutils.widgets.get(config.MLFLOW_EXPERIMENT_PARAM))")
+        use = "tracking.use_experiment(WorkspaceClient(), mlflow_experiment)"
+        assert code.count(use) == 1 and "from databricks.sdk import WorkspaceClient" in code, name
+        assert resolved < code.index(use) < code.index("mlflow.start_run("), name
+    for name, code in sources.items():
+        for call in ("autolog(", "set_experiment(", "create_experiment("):
+            assert call not in code, f"{name}: {call}"
+
+
 @pytest.mark.parametrize("name", BATCH)
 def test_batch_scoring_is_driver_side_at_the_pinned_champion(name):
     """07_ / 08_ resolve champion to a version, load exactly that version and score on the driver
@@ -311,7 +333,7 @@ def test_inline_model_serves_without_common(name, tmp_path):
                        N_LEADS=12, N_SAMPLES=2500, ARR_FLAG_THRESHOLD=0.5, AFIB_TEMPERATURE=2.0)
     sys.modules[nb.__name__] = nb
     try:
-        exec(compile(_model_cell(WORKFLOW / name), name, "exec"), nb.__dict__)
+        exec(compile(_model_cell(WORKFLOW / name), name, "exec"), nb.__dict__)   # noqa: S102 (the repo's own model cell)
         cloudpickle.register_pickle_by_value(nb)
         state_dict = tmp_path / "state_dict.pt"
         torch.save(getattr(nb, cnn_name)().state_dict(), state_dict)
@@ -322,7 +344,7 @@ def test_inline_model_serves_without_common(name, tmp_path):
 
     # Fresh interpreter, cwd and sys.path without projects/ecg12-afib: `common` cannot be imported.
     result = subprocess.run([sys.executable, "-I", "-c", _LOAD_AND_PREDICT, str(pickled), str(state_dict)],
-                            capture_output=True, text=True, cwd=tmp_path, timeout=300)
+                            capture_output=True, text=True, cwd=tmp_path, timeout=300, check=False)
     assert result.returncode == 0, result.stderr
     if pyfunc_name == "ArrModelPyfunc":
         assert "frame ['arr_prob', 'arr_flag'] (3, 2) [0.0, 1.0]" in result.stdout

@@ -63,7 +63,8 @@ def add_not_found_handler(app: FastAPI) -> None:
             if (not is_api) and is_get_page_nav and (not looks_like_asset):
                 # Let the SPA router handle it
                 return FileResponse(dist_dir / "index.html")
-        # Default: return the original HTTP error (JSON 404 for API, etc.)
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        # Default: return the original HTTP error (JSON 404 for API, etc.), with its headers (a
+        # 429's Retry-After), as FastAPI's default handler, which this one replaces, does.
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
     app.exception_handler(StarletteHTTPException)(http_exception_handler)

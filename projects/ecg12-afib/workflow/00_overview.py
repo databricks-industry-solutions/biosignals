@@ -67,22 +67,30 @@
 # MAGIC | `bio_ecg12_arr` | accuracy ≥ 0.95, ROC AUC ≥ 0.98, sensitivity ≥ 0.97 (a missed abnormal never reaches the AFib model), specificity ≥ 0.90 |
 # MAGIC | `bio_ecg12_afib` | accuracy ≥ 0.95, ROC AUC ≥ 0.98, sensitivity ≥ 0.95, share of Other (sinus tachycardia) called AFib ≤ 0.05 |
 # MAGIC
-# MAGIC MLflow records each step: the training runs (params, per-epoch and final validation metrics,
+# MAGIC MLflow records each step, all in one experiment (bundle variable `mlflow_experiment`, default
+# MAGIC `/Users/<deployer>/biosignals-ecg12-afib`, kept when the bundle is destroyed): the training runs
+# MAGIC (params, per-epoch and final validation metrics,
 # MAGIC tags, the layer table `model_architecture.md`, the model with signature + input example), the
 # MAGIC gate run (thresholds, hold-out metrics, and per model under `holdout_eval/<model>/` a confusion
 # MAGIC matrix with raw counts, ROC and precision-recall curves, a per-class precision / recall / F1
-# MAGIC table and a README), and tags on each model version (training data version,
-# MAGIC `validation_status`, `gate_result`, `holdout_*`, `holdout_eval_artifacts`). `validation_status`
+# MAGIC table and a README), and tags on each model version (its training data version; on each
+# MAGIC challenger the gate decides on, `validation_status`, `gate_result`, `holdout_*`,
+# MAGIC `holdout_eval_artifacts`). A champion that is only re-checked (not retrained) keeps the tags of
+# MAGIC the gate that promoted it. `validation_status`
 # MAGIC is set by the gate only, to `valid` or `invalid`, so it also works where a Unity Catalog tag
 # MAGIC policy restricts that key to those two values. The endpoints are named
 # MAGIC `<endpoint_prefix>_arr` / `<endpoint_prefix>_afib` (bundle variable `endpoint_prefix`, default
 # MAGIC `bio_ecg12`): endpoint names are workspace-wide, unlike the models and tables in your schema.
 # MAGIC
-# MAGIC **Why the metrics sit near 1.0.** The synthetic rhythms are trivially separable by design: heart
-# MAGIC rate alone separates triage (the generator draws NSR at 60–100 bpm, AFib and Other at 100–160
-# MAGIC bpm), and beat-to-beat irregularity separates AFib from Other (RR intervals vary ~20 % in AFib,
-# MAGIC ~3 % in sinus rhythm). So validation and hold-out metrics sit near ceiling (~1.0), and each model
-# MAGIC trains once with one fixed configuration (`TRAIN_PARAMS`), no hyperparameter search. This is a
+# MAGIC **Why the metrics sit near 1.0.** The synthetic rhythms are close to separable by design. Heart
+# MAGIC rate alone nearly separates triage: the generator draws NSR at 60–100 bpm and AFib and Other at
+# MAGIC 100–160 bpm, so one heart-rate cut-off (about 95 bpm) calls about 99 % of ECGs right (99.7 % of
+# MAGIC the training dataset); it is not perfect because AFib's irregular beats measure below 100 bpm for
+# MAGIC about 2–5 % of AFib ECGs. Beat-to-beat irregularity separates AFib from Other (RR intervals vary
+# MAGIC ~20 % in AFib, ~3 % in sinus rhythm), and AFib also differs in more than rhythm: no P waves, a
+# MAGIC fibrillatory baseline (f-waves) and more beat-to-beat amplitude scatter. So validation and
+# MAGIC hold-out metrics sit near ceiling (~1.0), and each model trains once with one fixed
+# MAGIC configuration (`TRAIN_PARAMS`), no hyperparameter search. This is a
 # MAGIC clean, synthetic **showcase of the MLOps cycle**, not a hard ML problem; the thresholds are
 # MAGIC engineering floors for this data, not clinical acceptance criteria.
 # MAGIC
@@ -119,11 +127,12 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **The 12 leads.** A standard ECG gives *"12 different vector views of the heart's electrical
-# MAGIC activity"*, measured between electrodes on the limbs and the chest wall: *"Six of these views are
-# MAGIC in a vertical (coronal) plane using frontal leads I, II, and III and limb leads aVR, aVL, and aVF,
-# MAGIC and 6 are in a horizontal (axial) plane using precordial leads V1, V2, V3, V4, V5, and V6."*
-# MAGIC (Merck Manual Professional, *Electrocardiography*, reviewed June 2026.)
+# MAGIC **The 12 leads.** With electrodes on the arms, the left leg and across the chest, a standard ECG
+# MAGIC records the heart's electrical activity from 12 directions at once. Half of them (the limb leads I,
+# MAGIC II, III and the augmented limb leads aVR, aVL, aVF) look at the heart in the body's front-facing,
+# MAGIC vertical plane (frontal, or coronal); the other half (the chest, or precordial, leads V1–V6) look
+# MAGIC at it in the plane that cuts across the body (horizontal, or axial). Background: AHA/ACCF/HRS
+# MAGIC *Recommendations for the Standardization and Interpretation of the Electrocardiogram, Part I* (Kligfield et al., Circulation 2007).
 # MAGIC
 # MAGIC | Group | Leads | Plane | In this demo |
 # MAGIC |---|---|---|---|
@@ -189,6 +198,11 @@
 # MAGIC for `06_`–`08_`, `run_date` (`YYYY-MM-DD`; empty = today UTC). The DAILY job passes
 # MAGIC `{{job.start_time.iso_date}}` to all three tasks so they agree on one date; run it with
 # MAGIC `run_date=YYYY-MM-DD` to backfill. Re-running a date gives the same rows and never duplicates them.
+# MAGIC
+# MAGIC **One schema per deployment.** The model and table names are fixed, so each deployment needs its
+# MAGIC own schema. Both jobs also pass `deployment_id` (`<workspace id>:<bundle root path>`): the SETUP
+# MAGIC job's first task records it as the schema's owner in `ecg12_afib_deployment`, and the first task
+# MAGIC of SETUP and DAILY stops, before writing anything, when the schema belongs to another deployment.
 # MAGIC
 # MAGIC **Deploy / run (bundle `biosignals-ecg12-afib`):** jobs + dashboard from the workspace bundle
 # MAGIC editor (target `no_app`, the default), or everything including the app with `deploy.sh` from a

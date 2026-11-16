@@ -5,37 +5,32 @@ on:
     branches: [ main, preview ]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  publish:
-    runs-on: html_publisher
-    environment:
-      name: ${{ github.ref_name == 'main' && 'github-pages' || 'preview' }}
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
+    name: Build Pages artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
 
       - name: Checkout project
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .github/requirements-publish.txt
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install nbconvert jupyter-book sphinx markdown beautifulsoup4
-          # HTML sanitizer for every rendered fragment (.github/scripts/sanitize_html.py); MIT license
-          pip install nh3==0.3.7
+        run: python -m pip install --require-hashes -r .github/requirements-publish.txt
 
       # Renders the root README.md, each projects/<project>/README.md, each project's docs/*.md and
       # every project notebook (Databricks .py source notebooks and .ipynb under projects/) into one
@@ -186,18 +181,18 @@ jobs:
                   notebooks[name] = clean(str(container if container else body))
           
           # Create single-page application
+          section_selector = '${sectionId}'
           html = f'''<!DOCTYPE html>
           <html>
           <head>
               <title>{esc(title)}</title>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-              <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet">
+              <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" integrity="sha384-rCCjoCPCsizaAAYVoz1Q0CmCTvnctK0JkfCSjx7IIxexTBg+uCKtFYycedUjMyA2" crossorigin="anonymous">
               <style>
                   * {{ box-sizing: border-box; }}
                   body {{ 
-                      font-family: 'DM Sans', sans-serif; 
+                      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                       margin: 0; 
                       padding: 0; 
                       background: #FFFFFF; 
@@ -468,8 +463,8 @@ jobs:
                   </div>
               </div>
               
-              <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
-              <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+              <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js" integrity="sha384-MXybTpajaBV0AkcBaCPT4KIvo0FzoCiWXgcihYsw4FUkEz0Pv3JGV6tk2G8vJtDc" crossorigin="anonymous"></script>
+              <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js" integrity="sha384-Uq05+JLko69eOiPr39ta9bh7kld5PKZoU+fF7g0EXTAriEollhZ+DrN8Q/Oi8J2Q" crossorigin="anonymous"></script>
               <script>
                   function showSection(sectionId, anchorId) {{
                       // Hide all sections
@@ -500,7 +495,7 @@ jobs:
                       }}
                       
                       // Mark the section's nav link (the sidebar and in-page links both land here)
-                      const navLink = document.querySelector(`.nav-link[data-section="${{sectionId}}"]`);
+                      const navLink = document.querySelector(`.nav-link[data-section="{section_selector}"]`);
                       if (navLink) navLink.classList.add('active');
 
                       // Jump to the linked heading, else to the top of the section
@@ -557,10 +552,21 @@ jobs:
           EOF
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: 'site'
 
+  deploy:
+    name: Deploy Pages artifact
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: ${{ github.ref_name == 'main' && 'github-pages' || 'preview' }}
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

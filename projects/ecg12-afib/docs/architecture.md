@@ -5,7 +5,8 @@
 ## Sketch
 
 Two Lakeflow jobs (workflows) feed one app and one dashboard. Every table and model sits in your
-Unity Catalog catalog and schema.
+Unity Catalog catalog and schema, which belongs to this one deployment (see
+[One schema per deployment](deploy.md#one-schema-per-deployment)).
 
 ```mermaid
 %%{init: {'theme':'neutral'}}%%
@@ -43,7 +44,7 @@ the endpoints, so live requests show up in the request-log tables and batch scor
 | `deploy.sh` | Full install from a laptop (target `full`): build, validate, deploy, SETUP run, permissions, app start, embedding allowlist |
 | `resources/` | `ecg12_afib_setup.job.yml`, `ecg12_afib_daily.job.yml` (the jobs), `ecg12_afib.dashboard.yml` (the dashboard) |
 | `workflow/` | Notebooks `00_`–`08_` (below). Each puts `..` on `sys.path` and imports `common` |
-| `common/` | Shared code, single source of truth: `config.py` (names, `N_LEADS = 12`, aliases, training split + settings, validation thresholds, run date, the catalog/schema parameter check), `ecg_signal_gen.py` (12-lead generator), `training_data.py` (the persisted training dataset), `training.py` (PyTorch training loop, layer table), `evaluation.py` (metrics, the gate's threshold check, confusion counts, ROC / precision-recall curves, per-class table), `eval_plots.py` (the gate's evaluation figures), `ecg_plots.py` (sample-signal plots), `patient_info.py` (synthetic patient record), `scoring.py` (alias → version, driver-side scoring), `uc_io.py` (re-run-safe Delta writes, Delta versions) |
+| `common/` | Shared code, single source of truth: `config.py` (names, `N_LEADS = 12`, aliases, training split + settings, validation thresholds, run date, the catalog/schema name check, the deployment identity, the MLflow experiment path check), `ecg_signal_gen.py` (12-lead generator), `training_data.py` (the persisted training dataset), `training.py` (PyTorch training loop, layer table), `evaluation.py` (metrics, the gate's threshold check, confusion counts, ROC / precision-recall curves, per-class table), `eval_plots.py` (the gate's evaluation figures), `ecg_plots.py` (sample-signal plots), `patient_info.py` (synthetic patient record), `scoring.py` (alias → version, driver-side scoring), `uc_io.py` (re-run-safe Delta writes, Delta versions, the schema-ownership record and check), `tracking.py` (the SETUP job's MLflow experiment, with its folder, made active) |
 | `dashboards/` | `ecg12_afib.lvdash.json` (the dashboard the bundle deploys) and `build_ecg_demo_dashboard.py`, which generates it |
 | `app/` | APX app (React UI + FastAPI backend). `backend/common/` is a byte-identical copy of `common/{__init__,config,ecg_signal_gen,patient_info}.py`; the build fails if it drifts. Build with `app/build_from_lockfiles.sh`, see [`app/README.md`](../app/README.md) |
 | `dev/` | Developer tools, not deployed (excluded from bundle sync, outside the app wheel): `signal_variety/` checks how varied and how separable the generator's ECGs are; `tests/` holds optional local checks (see [Tests](../dev/tests/README.md)); see [`dev/README.md`](../dev/README.md) |
@@ -53,18 +54,20 @@ the endpoints, so live requests show up in the request-log tables and batch scor
 | Notebook | Job → task | Writes | Compute |
 |---|---|---|---|
 | `00_overview` | — | Docs: the whole flow on one page, the 12-lead legend | — |
-| `01_generate_training_data` | SETUP → `generate_training_data` | the schema if it does not exist; `training_data_12l` (`train` 600 / `val` 200 / `holdout` 200 ECGs by default) + sample plots | standard serverless |
-| `02_train_arr_model` | SETUP → `train_arr_model` (after 01) | MLflow run (incl. the layer table); new version of `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) |
-| `03_train_afib_model` | SETUP → `train_afib_model` (after 01, parallel with 02) | MLflow run (incl. the layer table); new version of `bio_ecg12_afib` → `@challenger` | serverless GPU (A10, AI v5) |
-| `04_validate_and_promote` | SETUP → `validate_and_promote` (after 02 + 03) | gate run with hold-out metrics + evaluation artifacts; both pass → `@champion` moves to the challengers, else the task fails | serverless GPU (A10, AI v5) |
+| `01_generate_training_data` | SETUP → `generate_training_data` | the schema if it does not exist; on the first run `ecg12_afib_deployment` (this deployment owns the schema; stops first if another one does); `training_data_12l` (`train` 600 / `val` 200 / `holdout` 200 ECGs by default) + sample plots | standard serverless |
+| `02_train_arr_model` | SETUP → `train_arr_model` (after 01) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) |
+| `03_train_afib_model` | SETUP → `train_afib_model` (after 01, parallel with 02) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_afib` → `@challenger` | serverless GPU (A10, AI v5) |
+| `04_validate_and_promote` | SETUP → `validate_and_promote` (after 02 + 03) | gate run (same experiment) with hold-out metrics + evaluation artifacts; both pass → `@champion` moves to the challengers, else the task fails | serverless GPU (A10, AI v5) |
 | `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `<endpoint_prefix>_arr`, `<endpoint_prefix>_afib` at `@champion` (stops if one already serves another deployment's model) + inference tables `<model>_payload` | standard serverless |
-| `06_generate_batch_data` | DAILY → `simulate_incoming_batch` | `batch_data_12l_<YYYYMMDD>`: simulated incoming data, not real ingestion (acquisition times spread over the clinic day) + sample plot | standard serverless |
+| `06_generate_batch_data` | DAILY → `simulate_incoming_batch` | (stops first unless `ecg12_afib_deployment` names this deployment) `batch_data_12l_<YYYYMMDD>`: simulated incoming data, not real ingestion (acquisition times spread over the clinic day) + sample plot | standard serverless |
 | `07_arr_triage` | DAILY → `arr_triage` (after 06) | `arr_triaged_12l_<YYYYMMDD>` and that date's rows of `arr_triage_history_12l` (scored on the driver) | standard serverless, ML v5 |
 | `08_afib_classify` | DAILY → `afib_classify` (after 07) | that date's rows of `dailyOrweekly_arr_afib_inference_12l` (scored on the driver) | standard serverless, ML v5 |
 
 Every notebook takes `catalog_name` (required: the jobs pass the bundle's `catalog` variable; when
-you run a notebook by hand, type it into the widget) and `schema_name` (default `biosignals`). The
-DAILY notebooks also take `run_date`.
+you run a notebook by hand, type it into the widget) and `schema_name` (default `biosignals`); both
+must be letters, digits and underscores. The DAILY notebooks also take `run_date`. The first task
+of each job (`01_`, `06_`) also takes `deployment_id`, which both jobs pass as
+`<workspace id>:<bundle root path>`; by hand, copy it from `ecg12_afib_deployment`.
 
 Run SETUP first (and again to retrain); DAILY needs its champion models. The DAILY job has a paused
 06:00 UTC schedule and one `run_date` job parameter (default `{{job.start_time.iso_date}}`) that
@@ -87,6 +90,11 @@ in one Delta transaction; `uc_io.write_date_slice` refuses any existing table wi
   `bio_ecg12_afib_payload`. One 12-lead ECG is ~650 KB of JSON, inside the inference table's 1 MiB
   logging limit; a request above 1 MiB is served but logged with `MAX_REQUEST_SIZE_EXCEEDED` and a
   null payload, so `05_`'s smoke test and the app's warm-up pings also send one ECG per request.
+  So the app itself writes no table, but every ECG it scores is stored: each logged request holds
+  the whole ECG, and its response the scores. Anyone in `viewer_group` (default `users`) can use
+  the app and so add rows. That is fine for this synthetic data; if you adapt the project to real
+  data, treat the two payload tables as patient data (limit who can `SELECT` them, and narrow
+  `viewer_group`).
 
 **Scale-to-zero and the app.** Both endpoints scale to zero when idle, and waking one took 89 s and
 130 s when this demo was tested. So every endpoint call from the app is bounded by

@@ -242,7 +242,7 @@ xl = {"deriv_err": [], "offdiag": [], "gt095": [], "pair": [], "avr_qrs_neg": []
 iu = np.triu_indices(12, k=1)
 for r in recs:
     e = r["noisy"].astype(np.float32)          # the generator's float32 output
-    I, II = e[LI["I"]], e[LI["II"]]
+    I, II = e[LI["I"]], e[LI["II"]]           # noqa: E741 (lead I, as in the formulas)
     xl["deriv_err"].append(max(np.abs(e[LI["III"]] - (II - I)).max(), np.abs(e[LI["aVR"]] + (I + II) / 2).max(),
                                np.abs(e[LI["aVL"]] - (I - II / 2)).max(), np.abs(e[LI["aVF"]] - (II - I / 2)).max()))
     t = r["tpl_clean"]
@@ -303,9 +303,9 @@ summary["noise_and_degeneracy"] = {
     "noisy_vs_clean_leadII_corr": q([np.corrcoef(r["noisy"][LI["II"]], r["clean"][LI["II"]])[0, 1] for r in recs]),
     "nan_or_inf_samples": int((~np.isfinite(allx)).sum()),
     "global_min_max_mV": [round(float(allx.min()), 3), round(float(allx.max()), 3)],
-    "leads_with_std_lt_0.01mV": int(sum(r["noisy"][l].std() < 0.01 for r in recs for l in range(12))),
-    "leads_with_max_repeated_ge5_samples": int(sum(np.sum(np.isclose(r["noisy"][l], r["noisy"][l].max(), atol=1e-6)) >= 5
-                                                   for r in recs for l in range(12))),
+    "leads_with_std_lt_0.01mV": int(sum(r["noisy"][lead].std() < 0.01 for r in recs for lead in range(12))),
+    "leads_with_max_repeated_ge5_samples": int(sum(np.sum(np.isclose(r["noisy"][lead], r["noisy"][lead].max(), atol=1e-6)) >= 5
+                                                   for r in recs for lead in range(12))),
     "identical_lead_pairs_within_a_record": int(sum(np.allclose(r["noisy"][a], r["noisy"][b])
                                                     for r in recs for a, b in combinations(range(12), 2))),
 }

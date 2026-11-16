@@ -273,9 +273,10 @@ layout = [
         "Flagged-patient worklist (latest day, top 25 by AFib probability)", (0, 23, 12, 6)),
     text("patient-note", ["**Who is being flagged.** Every ECG row carries a synthetic patient + acquisition "
                           "record (`mrn`, age, sex, height, weight, BMI, blood pressure, heart rate measured from the "
-                          "ECG, acquisition time). AFib rises with age, as in real populations. The worklist ranks the "
-                          "day's flagged patients by AFib probability — the queue a cardiology reviewer would work "
-                          "through."], 0, 29, 12, 2),
+                          "ECG, acquisition time). The generator assigns AFib more often to older synthetic patients, "
+                          "so the age view has a pattern to show. The worklist sorts the day's flagged synthetic "
+                          "records by AFib probability to show what a review queue on these tables could look like; "
+                          "it is a demo, not a clinical worklist."], 0, 29, 12, 2),
 
     # --- Live serving ----------------------------------------------------------------------------
     text("hdr-live", ["### Live serving — the app (endpoint calls logged by AI Gateway)\n", "\n",

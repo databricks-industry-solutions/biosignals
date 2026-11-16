@@ -7,7 +7,9 @@ here. The app keeps a byte-identical copy in ``app/src/ecg_demo_react/backend/co
 Nothing here names a workspace. The Unity Catalog location comes from the bundle variables
 ``catalog`` (required) and ``schema`` (default ``SCHEMA``): the jobs pass them to every notebook
 as the ``catalog_name`` / ``schema_name`` parameters (widgets), and the app reads them from its
-environment (``databricks.yml``). The daily notebooks also take ``run_date``.
+environment (``databricks.yml``). The daily notebooks also take ``run_date``, the first task of
+each job takes ``deployment_id`` (see "One schema per deployment" below), and the notebooks that log
+MLflow runs (02_, 03_, 04_) take ``mlflow_experiment`` (see "MLflow experiment" below).
 
 The demo is a reference pattern, not a fixed pipeline: the catalog/schema, lead count, model
 and table names, training split, training settings and validation thresholds below are the
@@ -24,6 +26,35 @@ import re
 # default catalog (each workspace has its own); SCHEMA is the default schema. The SETUP job's
 # first task creates the schema when it does not exist yet.
 SCHEMA = "biosignals"
+# Catalog, schema and object names are put into SQL and model names without quoting, so each part
+# must be a plain identifier: letters, digits and underscores (Unity Catalog accepts more characters,
+# such as hyphens, but only inside backticks). Checked by uc_location / uc_name before any use.
+_UC_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9_]+")
+_UC_IDENTIFIER_MAX = 255                # Unity Catalog's limit on an object name
+
+# --- One schema per deployment ------------------------------------------------------------
+# The model and table names below are fixed, so two deployments of this bundle in one
+# <catalog>.<schema> would use the same objects: one SETUP would overwrite the other's training
+# data and move its @champion, and either teardown would delete what the other serves. To make
+# that impossible to do by accident, the SETUP job's first task records which deployment owns
+# the schema in DEPLOYMENT_TABLE (uc_io.claim_schema), and the first task of SETUP and DAILY stops
+# when the schema belongs to another deployment (uc_io.check_schema_owner). The identity is the
+# DEPLOYMENT_ID_PARAM job parameter, "<workspace id>:<bundle root path>" (resources/*.job.yml):
+# unique per bundle deployment (user, target and workspace) and the same on every run of it.
+DEPLOYMENT_TABLE = "ecg12_afib_deployment"
+DEPLOYMENT_ID_PARAM = "deployment_id"
+DEPLOYMENT_ID_COL = "deployment_id"
+
+# --- MLflow experiment (tracking, not the model registry) ---------------------------------
+# Every MLflow run of the SETUP job (02_, 03_ train; 04_ gate) is logged to ONE experiment, the
+# MLFLOW_EXPERIMENT_PARAM job parameter from the bundle's `mlflow_experiment` variable (default
+# /Users/<deployer>/biosignals-ecg12-afib). It is a plain workspace path, not a bundle resource, so
+# it outlives `bundle destroy` and run history accrues across redeploys. tracking.use_experiment
+# creates it on first use, and its parent folder first: an identity may have no home folder yet
+# (e.g. a service principal), and MLflow does not create a missing parent folder.
+# Without it each notebook would log to its own notebook experiment inside the bundle's folder,
+# which `bundle destroy` deletes. The DAILY job starts no runs, so it does not take the parameter.
+MLFLOW_EXPERIMENT_PARAM = "mlflow_experiment"
 
 # --- Model-input contract -----------------------------------------------------------------
 # Leads per ECG, for generation, storage (ecg1..ecgN columns) and the models' input
@@ -31,7 +62,8 @@ SCHEMA = "biosignals"
 N_LEADS = 12
 
 # --- Models (UC registered models) ---------------------------------------------------------
-# Fixed names: they live in <catalog>.<schema>, so each deployment's models are its own.
+# Fixed names in <catalog>.<schema>: a deployment's models are its own only because its schema
+# is its own (DEPLOYMENT_TABLE above).
 ARR_MODEL_NAME = "bio_ecg12_arr"    # triage: abnormal rhythm -> arr_prob, arr_flag
 AFIB_MODEL_NAME = "bio_ecg12_afib"  # classify (flagged only): [p_not_afib, p_afib]
 # Their AI Gateway inference tables (enabled by 05_, read by the dashboard's live section) are
@@ -147,19 +179,67 @@ WARMUP_INTERVAL_S = 600
 WARMUP_REQUEST_ID = "app-warmup"
 
 
+def check_identifier(value: str, what: str) -> str:
+    """``value`` if it is a plain Unity Catalog identifier (letters, digits, underscores, at most
+    255 characters), else ValueError naming ``what``. Every catalog, schema and object name passes
+    here before it reaches SQL, so a name can never change the statement it is put into."""
+    if not (_UC_IDENTIFIER_PATTERN.fullmatch(value) and len(value) <= _UC_IDENTIFIER_MAX):
+        raise ValueError(f"{what}={value!r}: this demo needs a name of letters, digits and underscores "
+                         f"only (at most {_UC_IDENTIFIER_MAX} characters)")
+    return value
+
+
 def uc_location(catalog: str | None, schema: str | None) -> tuple[str, str]:
     """The ``catalog_name`` / ``schema_name`` parameters, checked: the catalog is required (no
-    default), an empty schema means ``SCHEMA``."""
+    default), an empty schema means ``SCHEMA``, and both must be plain identifiers."""
     catalog, schema = (catalog or "").strip(), (schema or "").strip() or SCHEMA
     if not catalog:
         raise ValueError("catalog_name is empty: the jobs pass the bundle's required `catalog` "
                          "variable; when running a notebook by hand, type the catalog into the widget")
-    return catalog, schema
+    return check_identifier(catalog, "catalog_name"), check_identifier(schema, "schema_name")
 
 
 def uc_name(name: str, catalog: str, schema: str = SCHEMA) -> str:
-    """Three-level UC name, e.g. ``uc_name(ARR_MODEL_NAME, catalog)``."""
-    return f"{catalog}.{schema}.{name}"
+    """Three-level UC name, e.g. ``uc_name(ARR_MODEL_NAME, catalog)``; every part checked by
+    ``check_identifier``."""
+    return ".".join(check_identifier(part, what) for part, what in
+                    ((catalog, "catalog"), (schema, "schema"), (name, "name")))
+
+
+def check_uc_name(full_name: str) -> str:
+    """``full_name`` if it is ``<catalog>.<schema>.<name>`` of plain identifiers (as ``uc_name``
+    builds it), else ValueError. For names that arrive from elsewhere, e.g. a model-version tag."""
+    parts = full_name.split(".")
+    if len(parts) != 3:
+        raise ValueError(f"{full_name!r} is not a three-level <catalog>.<schema>.<name>")
+    return uc_name(parts[2], parts[0], parts[1])
+
+
+def resolve_deployment_id(value: str | None) -> str:
+    """The ``deployment_id`` parameter, checked: the jobs pass ``<workspace id>:<bundle root
+    path>``; empty or unresolved (a ``{{...}}`` / ``${...}`` reference) is refused, because the
+    schema-ownership check needs this deployment's real identity."""
+    value = (value or "").strip()
+    if not value or "{{" in value or "${" in value:
+        raise ValueError(f"{DEPLOYMENT_ID_PARAM}={value!r}: the jobs pass this deployment's identity "
+                         "(<workspace id>:<bundle root path>); when running a notebook by hand, copy the "
+                         f"value from {DEPLOYMENT_TABLE} in your schema or from a past job run's parameters")
+    return value
+
+
+def resolve_mlflow_experiment(value: str | None) -> str:
+    """The ``mlflow_experiment`` parameter, checked: an absolute workspace path inside a folder, such
+    as ``/Users/<user name>/biosignals-ecg12-afib`` (Databricks names experiments by path; the folder
+    is created when missing); empty, not in a folder, or unresolved (a ``{{...}}`` / ``${...}``
+    reference) is refused, so a run never falls back to the notebook's own experiment, which
+    ``bundle destroy`` deletes."""
+    value = (value or "").strip()
+    folder, name = value.rpartition("/")[::2]
+    if not (value.startswith("/") and folder and name) or "{{" in value or "${" in value:
+        raise ValueError(f"{MLFLOW_EXPERIMENT_PARAM}={value!r}: the SETUP job passes the bundle's "
+                         "`mlflow_experiment` variable, an absolute workspace path; when running a notebook "
+                         "by hand, type e.g. /Users/<your user name>/biosignals-ecg12-afib into the widget")
+    return value
 
 
 def resolve_run_date(value: str | None) -> dt.date:

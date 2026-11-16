@@ -1,0 +1,6 @@
+beautifulsoup4==4.15.0
+jupyter-book==2.1.7
+markdown==3.11.2
+nbconvert==7.17.2
+nh3==0.3.7
+sphinx==9.0.4

@@ -11,8 +11,12 @@
 #   05_serve_endpoints        -> endpoints <endpoint_prefix>_arr + _afib at @champion, AI Gateway
 #                                inference tables                                 standard serverless
 # The DAILY job (ecg12_afib_daily.job.yml) scores with the champion models; run this job first.
-# Model names come from common/config.py; the catalog, schema and endpoint prefix from the bundle
-# variables (job parameters catalog_name / schema_name / endpoint_prefix).
+# Model names come from common/config.py; the catalog, schema, endpoint prefix and MLflow experiment
+# from the bundle variables (job parameters catalog_name / schema_name / endpoint_prefix /
+# mlflow_experiment). 02_, 03_ and 04_ log their runs to that one experiment.
+# One schema per deployment: 01_ records this deployment (deployment_id) as the schema's owner on the
+# first run and stops, before writing anything, when the schema belongs to another deployment (the
+# model and table names are fixed, so two deployments in one schema would overwrite each other).
 resources:
   jobs:
     ecg12_afib_setup:
@@ -28,6 +32,13 @@ resources:
         # Workspace-wide serving endpoint names <endpoint_prefix>_arr / _afib (05_serve_endpoints).
         - name: endpoint_prefix
           default: ${var.endpoint_prefix}
+        # The one MLflow experiment the training (02_, 03_) and gate (04_) runs log to.
+        - name: mlflow_experiment
+          default: ${var.mlflow_experiment}
+        # This deployment's identity, <workspace id>:<bundle root path>: the workspace id is filled in
+        # when the job runs, the bundle's folder when it is deployed. Same value in the DAILY job.
+        - name: deployment_id
+          default: "{{workspace.id}}:${workspace.root_path}"
 
       # Serverless GPU AI v5 environment (A10, torch, CUDA) for the PyTorch training and gate tasks.
       environments:

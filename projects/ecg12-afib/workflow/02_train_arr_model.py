@@ -14,13 +14,16 @@
 # MAGIC
 # MAGIC **Training:** one fixed configuration, `TRAIN_PARAMS` in `common/config.py` (default: Adam,
 # MAGIC learning rate 1e-3, 20 epochs, batch 64, seed 0), no hyperparameter search. **Why the metrics
-# MAGIC sit near 1.0:** the synthetic rhythms are trivially separable by design. Heart rate alone
+# MAGIC sit near 1.0:** the synthetic rhythms are close to separable by design. Heart rate alone nearly
 # MAGIC separates triage (the generator draws NSR at 60–100 bpm and both abnormal classes at 100–160
-# MAGIC bpm), and beat-to-beat irregularity separates AFib (RR intervals vary ~20 % in AFib, ~3 % in
-# MAGIC sinus rhythm). So validation accuracy is ~1.0: this notebook is a clean showcase of the train →
-# MAGIC track → register step of the model cycle, not a hard ML problem.
+# MAGIC bpm; one cut-off calls about 99 % of ECGs right, not all, because AFib's irregular beats measure
+# MAGIC below 100 bpm for about 2–5 % of AFib ECGs), and beat-to-beat irregularity separates AFib (RR
+# MAGIC intervals vary ~20 % in AFib, ~3 % in sinus rhythm). So validation accuracy is ~1.0: this
+# MAGIC notebook is a clean showcase of the train → track → register step of the model cycle, not a
+# MAGIC hard ML problem.
 # MAGIC
-# MAGIC **MLflow** (the notebook's experiment, one run): every training setting and the dataset identity
+# MAGIC **MLflow** (one run in the project experiment, the `mlflow_experiment` job parameter, which
+# MAGIC outlives `bundle destroy`): every training setting and the dataset identity
 # MAGIC (table, Delta version, split sizes and seeds) as params; `train_loss`, `val_loss` and
 # MAGIC `val_accuracy` per epoch; the final validation accuracy, ROC AUC, average precision,
 # MAGIC sensitivity and specificity (`final_val_*`); the layer table `model_architecture.md`; tags for
@@ -56,7 +59,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(".."))   # notebook working dir = workflow/
 
-from common import config, evaluation, training, training_data, uc_io
+from common import config, evaluation, tracking, training, training_data, uc_io
 from common.ecg_signal_gen import N_SAMPLES, derive_arr_flag
 
 # Plain constants for the inline model code below (pickled by value with the model).
@@ -69,22 +72,25 @@ ARR_FLAG_THRESHOLD = float(config.ARR_FLAG_THRESHOLD)
 dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
 dbutils.widgets.text("model_name", config.ARR_MODEL_NAME, label="arr_model_name")
+dbutils.widgets.text(config.MLFLOW_EXPERIMENT_PARAM, "", label="mlflow_experiment (required, set by the job)")
 
 catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
                                                dbutils.widgets.get("schema_name"))
 full_name = config.uc_name(dbutils.widgets.get("model_name"), catalog_name, schema_name)
 train_table = config.uc_name(config.TRAINING_TABLE, catalog_name, schema_name)
+mlflow_experiment = config.resolve_mlflow_experiment(dbutils.widgets.get(config.MLFLOW_EXPERIMENT_PARAM))
 print(f"model: {full_name} (registers @{config.CHALLENGER_ALIAS}) | data: {train_table} | "
-      f"n_leads={N_LEADS} | n_samples={N_SAMPLES}")
+      f"n_leads={N_LEADS} | n_samples={N_SAMPLES} | MLflow experiment: {mlflow_experiment}")
 
 # COMMAND ----------
 
 # DBTITLE 1,Imports + confirm GPU
+import mlflow
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-import mlflow
+from databricks.sdk import WorkspaceClient
+from torch import nn
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"torch {torch.__version__} | cuda={torch.cuda.is_available()} | device={DEVICE}")
@@ -152,6 +158,7 @@ print(f"{train_table} @ Delta version {data_version}: train {train.x.shape} abno
 # DBTITLE 1,Train with the fixed config; log params, per-epoch and final validation metrics to MLflow
 P = config.TRAIN_PARAMS
 mlflow.set_registry_uri("databricks-uc")
+tracking.use_experiment(WorkspaceClient(), mlflow_experiment)   # the project experiment, not the notebook's own
 data_tags = {"training_table": train_table, "training_table_version": str(data_version)}
 
 
@@ -200,6 +207,7 @@ print({k: round(v, 4) for k, v in val_metrics.items()})
 
 # DBTITLE 1,Log as MLflow pyfunc + register to Unity Catalog as @challenger (NOT champion)
 import tempfile
+
 from mlflow import MlflowClient
 from mlflow.models import infer_signature
 

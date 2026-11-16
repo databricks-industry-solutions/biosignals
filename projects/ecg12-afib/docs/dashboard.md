@@ -7,10 +7,18 @@
 `resources/ecg12_afib.dashboard.yml` deploys `dashboards/ecg12_afib.lvdash.json` with both targets.
 Its queries name bare tables; the bundle points them at your catalog and schema
 (`dataset_catalog` / `dataset_schema`) and runs them on your `warehouse_id`. Deploying publishes
-it, with `embed_credentials: true`: the published dashboard runs its queries with the deploying
-identity's credentials, so viewers (and the app's embed) need only `CAN_READ` on the dashboard,
-which the bundle grants to `viewer_group`. The data is synthetic; set `embed_credentials: false` to
-make each viewer's own Unity Catalog grants apply instead.
+it, with `embed_credentials` from the bundle variable of that name.
+
+**Whose credentials the dashboard uses.** With `embed_credentials: true` (the default, for this
+synthetic demo only) the published dashboard runs every viewer's queries with the **deploying
+identity's** credentials: viewers (and the app's embed) need only `CAN_READ` on the dashboard,
+which the bundle grants to `viewer_group`, and they see whatever the deployer can see. That is
+acceptable here only because every row is synthetic. **If you adapt the project to real data, set
+`embed_credentials` to `false`** (`--var embed_credentials=false`, or `--embed-credentials false`
+with `deploy.sh`) and grant the viewers what their own queries need: `USE CATALOG` on the catalog,
+`USE SCHEMA` and `SELECT` on the schema (or on the dashboard's tables), and `CAN_USE` on the SQL
+warehouse. Each viewer then sees only what their own Unity Catalog grants allow; consider
+narrowing `viewer_group` from `users` as well.
 
 - **Batch monitoring** reads `arr_triage_history_12l` and `dailyOrweekly_arr_afib_inference_12l`:
   the funnel (landed → flagged → AFib-positive), arrivals per hour, triage by rhythm, the

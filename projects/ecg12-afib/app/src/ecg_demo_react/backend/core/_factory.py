@@ -4,11 +4,32 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from ..._metadata import api_prefix, app_name, dist_dir
 from ._base import LifespanDependency
 from ._config import logger
+
+# --- Request validation errors ---
+
+MAX_VALIDATION_ERRORS = 10
+
+
+async def _request_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's 422 reply, with at most MAX_VALIDATION_ERRORS errors and without each error's
+    ``input``. An ECG of NaN values would otherwise list 30,000 errors, each echoing a value that
+    JSON cannot encode, and the reply would fail as a 500; nor does the reply echo the request."""
+    errors = exc.errors()
+    detail = [{key: value for key, value in error.items() if key != "input"}
+              for error in errors[:MAX_VALIDATION_ERRORS]]
+    if len(errors) > MAX_VALIDATION_ERRORS:
+        detail.append({"loc": ["body"], "type": "too_many_errors",
+                       "msg": f"and {len(errors) - MAX_VALIDATION_ERRORS} more errors"})
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detail)})
+
 
 # --- Lifespan ---
 
@@ -25,9 +46,8 @@ async def _chain_dep_lifespans(
 
     head, *tail = deps
 
-    async with head.lifespan(app):
-        async with _chain_dep_lifespans(tail, app):
-            yield
+    async with head.lifespan(app), _chain_dep_lifespans(tail, app):
+        yield
 
 
 # --- Factory ---
@@ -55,14 +75,15 @@ def create_app(
             all_deps.append(dep())
         except Exception as e:
             logger.error(f"Failed to instantiate dependency {dep.__name__}: {e}")
-            raise e
+            raise
 
     @asynccontextmanager
     async def _composed_lifespan(app: FastAPI):
         async with _chain_dep_lifespans(all_deps, app):
             yield
 
-    app = FastAPI(title=app_name, lifespan=_composed_lifespan)
+    app = FastAPI(title=app_name, lifespan=_composed_lifespan,
+                  exception_handlers={RequestValidationError: _request_validation_error})
 
     api_router: APIRouter = create_router()
     for dep in all_deps:

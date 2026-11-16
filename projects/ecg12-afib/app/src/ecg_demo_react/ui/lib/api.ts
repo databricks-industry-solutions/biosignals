@@ -22,6 +22,7 @@ export interface AnalyzeResponse {
     arr_model: string;
     arr_prob: number;
     flagged: boolean;
+    notice?: string;
     p_afib?: number | null;
 }
 export interface AppConfigOut {
@@ -77,6 +78,16 @@ export interface PatientRecord {
     sampling_rate_hz: number;
     sex: string;
     weight_kg: number;
+}
+export interface RateLimited {
+    limit: number;
+    message: string;
+    retry_after_s: number;
+    scope: "caller" | "total";
+    window_s: number;
+}
+export interface RateLimitedOut {
+    detail: RateLimited;
 }
 export interface ServingError {
     endpoint: string;

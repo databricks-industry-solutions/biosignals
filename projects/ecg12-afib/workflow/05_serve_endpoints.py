@@ -83,11 +83,12 @@ print(f"{catalog}.{schema}: {SERVED}")
 
 # DBTITLE 1,Clients
 import time
+
 import mlflow
-from mlflow import MlflowClient
-from mlflow.deployments import get_deploy_client
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import AiGatewayInferenceTableConfig
+from mlflow import MlflowClient
+from mlflow.deployments import get_deploy_client
 
 mlflow.set_registry_uri("databricks-uc")
 deploy_client = get_deploy_client("databricks")

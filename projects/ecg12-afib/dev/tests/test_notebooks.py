@@ -361,7 +361,9 @@ def test_inline_model_serves_without_common(name, tmp_path):
         state_dict = tmp_path / "state_dict.pt"
         torch.save(getattr(nb, cnn_name)().state_dict(), state_dict)
         pickled = tmp_path / "model.pkl"
-        pickled.write_bytes(cloudpickle.dumps(getattr(nb, pyfunc_name)()))
+        python_model = getattr(nb, pyfunc_name)()
+        assert not hasattr(python_model, "_device")       # the device is picked at load time, never pickled
+        pickled.write_bytes(cloudpickle.dumps(python_model))
     finally:
         sys.modules.pop(nb.__name__, None)
 

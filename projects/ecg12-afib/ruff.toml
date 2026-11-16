@@ -1,0 +1,4 @@
+# Ruff settings for this project (run: `uvx ruff check projects/ecg12-afib`).
+# Databricks defines these names in every notebook at runtime; declaring them as builtins stops
+# F821 (undefined name) from firing on workflow/*.py.
+builtins = ["dbutils", "spark", "display"]

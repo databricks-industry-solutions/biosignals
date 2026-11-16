@@ -19,7 +19,7 @@ def _toy_data(n, seed):
 
 
 def _toy_model():
-    import torch.nn as nn
+    from torch import nn
     return nn.Sequential(nn.Conv1d(12, 4, 7, stride=4), nn.ReLU(), nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(4, 2))
 
 
@@ -28,7 +28,7 @@ def test_fit_logs_every_epoch_and_is_reproducible():
     x_tr, y_tr = _toy_data(32, 0)
     x_va, y_va = _toy_data(16, 1)
     seen = []
-    kwargs = dict(learning_rate=1e-2, epochs=4, batch_size=8, seed=3)
+    kwargs = {"learning_rate": 1e-2, "epochs": 4, "batch_size": 8, "seed": 3}
     model, history = training.fit(_toy_model, x_tr, y_tr, x_va, y_va, on_epoch=seen.append, **kwargs)
     assert [m.epoch for m in history] == [0, 1, 2, 3] and seen == history
     assert history[-1].train_loss < history[0].train_loss

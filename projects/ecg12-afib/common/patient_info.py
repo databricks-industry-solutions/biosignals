@@ -27,7 +27,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 from dataclasses import asdict, dataclass
-from functools import lru_cache
+from functools import cache, lru_cache
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -114,11 +114,11 @@ def _rng_for(*parts: object) -> np.random.Generator:
     return np.random.default_rng(int.from_bytes(digest[:8], "big"))
 
 
-@lru_cache(maxsize=None)
+@cache
 def demographics(pseudo_patient_id: str) -> _Demographics:
     """Demographics for one synthetic patient; always the same for the same id."""
     rng = _rng_for("demographics", pseudo_patient_id)
-    age = int(round(np.clip(rng.normal(64.0, 12.0), 40, 90)))
+    age = round(np.clip(rng.normal(64.0, 12.0), 40, 90))
     sex = "M" if rng.random() < 0.52 else "F"
     height_mean, height_sd = (176.0, 7.0) if sex == "M" else (162.0, 6.5)
     height_loss = 0.1 * max(age - 50, 0)                       # cm lost with age after 50
@@ -126,8 +126,8 @@ def demographics(pseudo_patient_id: str) -> _Demographics:
     target_bmi = float(np.clip(rng.lognormal(np.log(27.5), 0.17), 17, 50))
     weight_kg = round(target_bmi * (height_cm / 100) ** 2, 1)
     bmi = round(weight_kg / (height_cm / 100) ** 2, 1)
-    systolic = int(round(np.clip(112 + 0.55 * (age - 40) + 0.4 * (bmi - 25) + rng.normal(0, 11), 90, 200)))
-    diastolic = int(round(np.clip(0.5 * systolic + 18 + rng.normal(0, 6), 50, min(115, systolic - 25))))
+    systolic = round(np.clip(112 + 0.55 * (age - 40) + 0.4 * (bmi - 25) + rng.normal(0, 11), 90, 200))
+    diastolic = round(np.clip(0.5 * systolic + 18 + rng.normal(0, 6), 50, min(115, systolic - 25)))
     mrn = f"{MRN_PREFIX}{int(rng.integers(0, 10**7)):07d}"
     return _Demographics(mrn, age, sex, height_cm, weight_kg, bmi, systolic, diastolic)
 
@@ -175,7 +175,7 @@ def acquisition_time(pseudo_patient_id: str, run_date: dt.date) -> dt.datetime:
         if opening <= hour < closing:
             break
     seconds = int(hour * 3600)
-    return dt.datetime.combine(run_date, dt.time(), tzinfo=dt.timezone.utc) + dt.timedelta(seconds=seconds)
+    return dt.datetime.combine(run_date, dt.time(), tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
 
 
 def patient_record(

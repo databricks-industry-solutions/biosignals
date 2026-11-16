@@ -18,17 +18,25 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import TypeAdapter, ValidationError
 
 from .._metadata import app_slug
+from .common import config, patient_info
+from .common.ecg_signal_gen import AFIB, LABEL_NAMES, N_SAMPLES, NSR, OTHER, SAMPLING_RATE, synthesize_ecgs
 from .core import Dependencies, create_router, logger
 from .core._base import LifespanDependency
 from .models import (
-    GenerateRequest, GenerateResponse,
-    AnalyzeRequest, AnalyzeResponse,
+    AfibPrediction,
+    AnalyzeRequest,
+    AnalyzeResponse,
     AppConfigOut,
-    AfibPrediction, ArrPrediction,
-    EndpointStatus, RateLimited, RateLimitedOut, ServingError, ServingErrorOut, WarmupResponse,
+    ArrPrediction,
+    EndpointStatus,
+    GenerateRequest,
+    GenerateResponse,
+    RateLimited,
+    RateLimitedOut,
+    ServingError,
+    ServingErrorOut,
+    WarmupResponse,
 )
-from .common import config, patient_info
-from .common.ecg_signal_gen import AFIB, LABEL_NAMES, NSR, N_SAMPLES, OTHER, SAMPLING_RATE, synthesize_ecgs
 from .shared_state import SharedState
 
 router = create_router()

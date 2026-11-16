@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from inspect import isabstract
-from typing import Any, AsyncGenerator
+from typing import Any, ClassVar
 
 from fastapi import APIRouter, Depends, FastAPI
 
@@ -16,7 +17,7 @@ class LifespanDependency(ABC):
     during the lifespan of the application (and through the request lifecycle).
     """
 
-    _registry: list[type[LifespanDependency]] = []
+    _registry: ClassVar[list[type[LifespanDependency]]] = []
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

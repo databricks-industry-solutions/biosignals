@@ -154,8 +154,8 @@ def class_counts(n: int, frac_afib: float = 0.25, frac_other: float = 0.25) -> d
     if frac_afib + frac_other > 1.0:
         raise ValueError(f"frac_afib + frac_other = {frac_afib + frac_other} > 1.0")
     # The old counts, from the float products exactly as the old code rounded them.
-    n_afib = min(int(round(n * frac_afib)), n)
-    counts = {AFIB: n_afib, OTHER: min(int(round(n * frac_other)), n - n_afib)}
+    n_afib = min(round(n * frac_afib), n)
+    counts = {AFIB: n_afib, OTHER: min(round(n * frac_other), n - n_afib)}
     counts[NSR] = n - counts[AFIB] - counts[OTHER]
     afib, other = Fraction(str(float(frac_afib))), Fraction(str(float(frac_other)))
     shares = {AFIB: n * afib, OTHER: n * other, NSR: max(n * (1 - afib - other), Fraction(0))}
@@ -308,7 +308,7 @@ def _acquisition_noise(rng: np.random.Generator, noise_level: float) -> np.ndarr
     """Noise for one recorded lead (mV): EMG + motion artifacts (neurokit2), hash, wander.
     signal_distort scales amplitudes by the input's SD unless the SD is 0, so it is called on
     a flat signal to get absolute amplitudes."""
-    import neurokit2 as nk   # here, so notebooks that only need N_SAMPLES skip neurokit2
+    import neurokit2 as nk  # here, so notebooks that only need N_SAMPLES skip neurokit2
 
     t = np.arange(N_SAMPLES) / SAMPLING_RATE
     noise = nk.signal_distort(
@@ -353,5 +353,5 @@ def _synthesize_one(label: int, rng: np.random.Generator, noise_level: float) ->
     by_name.update(derive_limb_leads(by_name["I"], by_name["II"]))
 
     in_window = r_times[(r_times >= 0.0) & (r_times < DURATION)]
-    heart_rate = int(round(60.0 / float(np.mean(np.diff(in_window)))))
+    heart_rate = round(60.0 / float(np.mean(np.diff(in_window))))
     return np.stack([by_name[name] for name in LEADS_12]), heart_rate

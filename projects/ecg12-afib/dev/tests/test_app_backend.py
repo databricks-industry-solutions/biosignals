@@ -15,7 +15,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-
 from conftest import DEMO_ROOT, TEST_CATALOG
 
 APP_SRC = DEMO_ROOT / "app" / "src"

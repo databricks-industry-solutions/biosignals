@@ -27,7 +27,7 @@ from scipy.signal import butter, filtfilt, find_peaks
 
 DEMO_ROOT = Path(__file__).resolve().parents[2]       # projects/ecg12-afib (holds common/)
 sys.path.insert(0, str(DEMO_ROOT))
-from common import ecg_signal_gen as g  # noqa: E402
+from common import ecg_signal_gen as g
 
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent / "output"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,7 @@ for k in CLASSES:
         clean, hr0 = one(k, seed, 0.0)
         r_times = g._r_peak_times(k, np.random.default_rng(seed))
         w = in_window(r_times)
-        assert hr_true == hr0 == int(round(60 / np.mean(np.diff(w)))), seed
+        assert hr_true == hr0 == round(60 / np.mean(np.diff(w))), seed
         recs.append({"label": k, "seed": seed, "noisy": noisy, "clean": clean, "hr_true": hr_true,
                      "r_times": r_times, "r_idx": np.round(w * FS).astype(int)})
 
@@ -219,7 +219,7 @@ for i, r in enumerate(recs):
         continue
     rt = r["r_times"]
     for b in range(1, len(rt) - 1):
-        p = int(round(rt[b] * FS))
+        p = round(rt[b] * FS)
         lo_, hi_ = p + int(0.06 * FS), p + int(0.6 * (rt[b + 1] - rt[b]) * FS)
         if p < 0 or hi_ >= g.N_SAMPLES:
             continue
@@ -233,7 +233,7 @@ summary["timing_invariants_sinus_classes"] = {
     "Tpeak_vs_sqrtRR_fit_slope_intercept_s": [round(float(c), 4) for c in coef],
     "fit_residual_sd_ms": round(1000 * float(resid.std()), 2),
     "per_patient_mean_residual_sd_ms": round(1000 * float(np.std([resid[pid == i].mean() for i in np.unique(pid)])), 2),
-    "n_beats": int(len(tl)),
+    "n_beats": len(tl),
 }
 
 # --- 3. across-lead variation within a patient ------------------------------------------------
@@ -242,7 +242,7 @@ xl = {"deriv_err": [], "offdiag": [], "gt095": [], "pair": [], "avr_qrs_neg": []
 iu = np.triu_indices(12, k=1)
 for r in recs:
     e = r["noisy"].astype(np.float32)          # the generator's float32 output
-    I, II = e[LI["I"]], e[LI["II"]]           # noqa: E741 (lead I, as in the formulas)
+    I, II = e[LI["I"]], e[LI["II"]]           # lead I, as in the formulas
     xl["deriv_err"].append(max(np.abs(e[LI["III"]] - (II - I)).max(), np.abs(e[LI["aVR"]] + (I + II) / 2).max(),
                                np.abs(e[LI["aVL"]] - (I - II / 2)).max(), np.abs(e[LI["aVF"]] - (II - I / 2)).max()))
     t = r["tpl_clean"]
@@ -252,10 +252,10 @@ for r in recs:
     xl["pair"].append((f"{LEADS[iu[0][np.argmax(c)]]}~{LEADS[iu[1][np.argmax(c)]]}", float(c.max())))
     xl["avr_qrs_neg"].append(abs(r["S_mV"][LI["aVR"]]) > r["R_mV"][LI["aVR"]])
     rr_mean = np.mean(np.diff(r["r_times"]))
-    t_idx = TPL_PRE + int(round((0.40 * np.sqrt(rr_mean) - 0.12) * FS))   # generator's T-peak centre
+    t_idx = TPL_PRE + round((0.40 * np.sqrt(rr_mean) - 0.12) * FS)   # generator's T-peak centre
     xl["avr_t_neg"].append(t[LI["aVR"], min(t_idx, t.shape[1] - 1)] < 0)
     if r["label"] != g.AFIB:
-        p_idx = TPL_PRE - int(round((0.12 + 0.04 * min(rr_mean, 1.2)) * FS))
+        p_idx = TPL_PRE - round((0.12 + 0.04 * min(rr_mean, 1.2)) * FS)
         xl["avr_p_neg"].append(t[LI["aVR"], p_idx] < 0)
     R = r["R_mV"][[LI[f"V{i}"] for i in range(1, 7)]]
     S = r["S_mV"][[LI[f"V{i}"] for i in range(1, 7)]]
@@ -331,9 +331,10 @@ with open(OUT / "per_record_stats.csv", "w", newline="") as fh:
                      round(float(np.sqrt((r["noise"][LI["II"]] ** 2).mean())), 4)])
 
 # --- plots ------------------------------------------------------------------------------------
-import matplotlib  # noqa: E402
+import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
 INK, INK2, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 plt.rcParams.update({"figure.facecolor": "white", "axes.facecolor": "white", "axes.edgecolor": GRID,

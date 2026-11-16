@@ -18,9 +18,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import DEMO_ROOT, TEST_CATALOG
 
 from common import config, uc_io
-from conftest import DEMO_ROOT, TEST_CATALOG
 
 RUN_DATES = ("2026-10-29", "2026-10-29", "2026-10-30")      # a date, its re-run, the next date
 # This deployment (its SETUP job recorded it as the schema's owner) and a second one.
@@ -110,7 +110,7 @@ def _run_notebook(name, uc, widgets):
                               library=SimpleNamespace(restartPython=lambda: None))
     source = "\n".join("" if line.startswith("# MAGIC") else line
                        for line in (DEMO_ROOT / "workflow" / name).read_text().splitlines())
-    exec(compile(source, name, "exec"),
+    exec(compile(source, name, "exec"),   # noqa: S102 (runs the repo's own notebook source)
          {"__name__": "__main__", "spark": uc, "dbutils": dbutils, "display": lambda df: df.collect()})
 
 

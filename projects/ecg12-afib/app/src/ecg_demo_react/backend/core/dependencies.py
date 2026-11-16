@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from typing import TypeAlias
-from ._defaults import ConfigDependency, ClientDependency
+
+from ._defaults import ClientDependency, ConfigDependency
 
 
 class Dependencies:

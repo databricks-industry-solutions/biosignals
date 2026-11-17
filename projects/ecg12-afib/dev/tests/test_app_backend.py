@@ -150,8 +150,9 @@ def backend(tmp_path, clock):
     """The app with a stand-in serving client and its own state file, plus the router module."""
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")                      # FastAPI's TestClient
-    if not (APP_SRC / "ecg_demo_react" / "_metadata.py").is_file():
-        pytest.skip("app/src/ecg_demo_react/_metadata.py not generated: run app/build_from_lockfiles.sh")
+    missing = [name for name in ("_metadata.py", "_version.py") if not (APP_SRC / "ecg_demo_react" / name).is_file()]
+    if missing:
+        pytest.skip(f"app/src/ecg_demo_react/{' and '.join(missing)} not generated: run app/build_from_lockfiles.sh")
     from ecg_demo_react.backend import router
     from ecg_demo_react.backend.core import create_app
     from ecg_demo_react.backend.core._config import AppConfig

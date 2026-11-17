@@ -2,12 +2,14 @@
 workers share (shared_state.py), and the routes' replies to a bad ECG, a rate limit and a failed or
 unreadable endpoint call (router.py, models.py), against a stand-in serving client.
 
-shared_state.py is standard library only, so its tests run in any environment. The route tests
-need the app's own dependencies (FastAPI, databricks-sdk), which the environment of
-run_tests_python311.sh does not have, and the _metadata.py / _version.py that apx writes
-(app/build_from_lockfiles.sh); they skip without them. README.md (this folder) has the command that
-runs them in the app's locked environment.
+shared_state.py is standard library only, so its tests run in any environment, a clean checkout
+included: they load the file itself, not through the ecg_demo_react package, whose __init__.py
+imports the _version.py that apx writes. The route tests need the app's own dependencies (FastAPI,
+databricks-sdk), which the environment of run_tests_python311.sh does not have, and the
+_metadata.py / _version.py that apx writes (app/build_from_lockfiles.sh); they skip without them.
+README.md (this folder) has the command that runs them in the app's locked environment.
 """
+import importlib.util
 import json
 import logging
 import sqlite3
@@ -20,7 +22,18 @@ from conftest import DEMO_ROOT, TEST_CATALOG
 APP_SRC = DEMO_ROOT / "app" / "src"
 sys.path.insert(0, str(APP_SRC))
 
-from ecg_demo_react.backend.shared_state import SharedState  # (needs APP_SRC on sys.path)
+
+def _load_shared_state():
+    """shared_state.py on its own (standard library only), without the package's generated files."""
+    spec = importlib.util.spec_from_file_location(
+        "app_shared_state", APP_SRC / "ecg_demo_react" / "backend" / "shared_state.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module                   # @dataclass looks its module up here
+    spec.loader.exec_module(module)
+    return module
+
+
+SharedState = _load_shared_state().SharedState
 
 N_LEADS, N_SAMPLES = 12, 2500
 
@@ -143,6 +156,7 @@ def backend(tmp_path, clock):
     from ecg_demo_react.backend.core import create_app
     from ecg_demo_react.backend.core._config import AppConfig
     from ecg_demo_react.backend.core._static import add_not_found_handler
+    from ecg_demo_react.backend.shared_state import SharedState  # the class the routes annotate
     from fastapi.testclient import TestClient
 
     app = create_app(routers=[router.router])

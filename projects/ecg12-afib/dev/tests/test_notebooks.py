@@ -13,9 +13,9 @@ import types
 
 import numpy as np
 import pytest
+from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES
 
 from common import config
-from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES
 
 WORKFLOW = DEMO_ROOT / "workflow"
 NOTEBOOKS = sorted(WORKFLOW.glob("*.py"))
@@ -180,6 +180,28 @@ def test_training_reads_the_persisted_dataset_and_logs_thoroughly(name):
     assert "artifact_path=" not in code                       # deprecated in MLflow 3; name= is used
 
 
+def test_every_mlflow_run_logs_to_the_project_experiment():
+    """The notebooks that start MLflow runs (02_, 03_, 04_) read the mlflow_experiment parameter and
+    make it the active experiment with tracking.use_experiment (which creates its folder, for an
+    identity without a home folder, see test_tracking.py) before their first run, so no run lands in
+    the notebook's own experiment (deleted with the bundle). No notebook calls MLflow's experiment
+    functions itself, and none autologs, which would start runs of its own."""
+    sources = {path.name: _python_source(path) for path in NOTEBOOKS}
+    assert {name for name, code in sources.items() if "mlflow.start_run(" in code} == {*TRAINING, GATE}
+    for name in (*sorted(TRAINING), GATE):
+        code = sources[name]
+        assert ('dbutils.widgets.text(config.MLFLOW_EXPERIMENT_PARAM, "", '
+                'label="mlflow_experiment (required, set by the job)")') in code, name
+        resolved = code.index("mlflow_experiment = config.resolve_mlflow_experiment("
+                              "dbutils.widgets.get(config.MLFLOW_EXPERIMENT_PARAM))")
+        use = "tracking.use_experiment(WorkspaceClient(), mlflow_experiment)"
+        assert code.count(use) == 1 and "from databricks.sdk import WorkspaceClient" in code, name
+        assert resolved < code.index(use) < code.index("mlflow.start_run("), name
+    for name, code in sources.items():
+        for call in ("autolog(", "set_experiment(", "create_experiment("):
+            assert call not in code, f"{name}: {call}"
+
+
 @pytest.mark.parametrize("name", BATCH)
 def test_batch_scoring_is_driver_side_at_the_pinned_champion(name):
     """07_ / 08_ resolve champion to a version, load exactly that version and score on the driver
@@ -214,6 +236,19 @@ def test_serving_never_takes_over_another_deployments_endpoint():
     assert code.index("if served != {full}:") < code.index("full, ver = deploy(model_name, endpoint_name, existing)")
     assert "table_name_prefix=model_name" in code and "table_name_prefix=endpoint_name" not in code
     assert "config.payload_table(model_name, catalog, schema)" in code
+
+
+def test_serving_enables_usage_tracking_in_the_one_ai_gateway_call():
+    """put_ai_gateway replaces the endpoint's whole AI Gateway config, so 05_'s single call per
+    endpoint passes both the inference table and usage tracking (enabled); a second call with only
+    one of them would switch the other off."""
+    code = _python_source(WORKFLOW / "05_serve_endpoints.py")
+    assert code.count("w.serving_endpoints.put_ai_gateway(") == 1
+    call = code[code.index("w.serving_endpoints.put_ai_gateway("):]
+    call = call[:call.index("\n    )\n")]
+    assert "inference_table_config=AiGatewayInferenceTableConfig(" in call
+    assert "usage_tracking_config=AiGatewayUsageTrackingConfig(enabled=True)" in call
+    assert "rate_limits=" not in call and "guardrails=" not in call
 
 
 def test_gate_logs_holdout_evaluation_artifacts_with_the_synthetic_caption():
@@ -268,6 +303,26 @@ def test_model_code_is_inline_and_self_contained(name):
         assert "AFIB_TEMPERATURE = float(config.AFIB_TEMPERATURE)" in path.read_text()
 
 
+@pytest.mark.parametrize("name", sorted(TRAINING))
+def test_pyfunc_picks_device_at_load(name):
+    """The wrapper loads onto whichever device is present (GPU if any, else CPU) instead of a
+    hard-coded one, says which it picked once loaded, moves inputs there, and brings outputs back
+    to CPU before numpy."""
+    _, pyfunc_name = TRAINING[name]
+    module = ast.parse(_python_source(WORKFLOW / name))
+    (cls,) = [n for n in module.body if isinstance(n, ast.ClassDef) and n.name == pyfunc_name]
+    methods = {f.name: ast.unparse(f) for f in cls.body if isinstance(f, ast.FunctionDef)}
+    load, predict = methods["load_context"], methods["predict"]
+    assert "self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')" in load
+    assert "map_location=self._device" in load and ".to(self._device)" in load
+    loaded = "print(f'{type(self).__name__} loaded on {self._device}')"
+    assert load.index(".to(self._device).eval()") < load.index(loaded)    # logged after the move
+    assert ".to(self._device)" in predict and ".cpu().numpy()" in predict
+    device_strings = [n.value for n in ast.walk(cls) if isinstance(n, ast.Constant) and n.value in ("cpu", "cuda")]
+    assert device_strings == ["cuda", "cpu"], f"{pyfunc_name}: device hard-coded outside the load-time pick"
+    assert ".cuda()" not in ast.unparse(cls)
+
+
 # --- serving check: pickle by value, load where `common` does not exist --------------------
 
 _LOAD_AND_PREDICT = textwrap.dedent("""
@@ -294,6 +349,12 @@ _LOAD_AND_PREDICT = textwrap.dedent("""
     else:
         print("array", np.asarray(out).shape, bool(np.allclose(np.asarray(out).sum(axis=1), 1.0)))
     print("flat_equal", bool(np.allclose(np.asarray(out), np.asarray(flat))))
+    import torch
+    expected = "cuda" if torch.cuda.is_available() else "cpu"
+    params = {p.device.type for p in model._model.parameters()}
+    print("device_ok", model._device.type == expected and params == {expected})
+    arrays = [out[c].to_numpy() for c in out.columns] if isinstance(out, pd.DataFrame) else [out]
+    print("numpy_out", sorted({f"{type(a).__name__} {a.dtype}" for a in arrays}))
 """)
 
 
@@ -311,21 +372,27 @@ def test_inline_model_serves_without_common(name, tmp_path):
                        N_LEADS=12, N_SAMPLES=2500, ARR_FLAG_THRESHOLD=0.5, AFIB_TEMPERATURE=2.0)
     sys.modules[nb.__name__] = nb
     try:
-        exec(compile(_model_cell(WORKFLOW / name), name, "exec"), nb.__dict__)
+        exec(compile(_model_cell(WORKFLOW / name), name, "exec"), nb.__dict__)   # noqa: S102 (the repo's own model cell)
         cloudpickle.register_pickle_by_value(nb)
         state_dict = tmp_path / "state_dict.pt"
         torch.save(getattr(nb, cnn_name)().state_dict(), state_dict)
         pickled = tmp_path / "model.pkl"
-        pickled.write_bytes(cloudpickle.dumps(getattr(nb, pyfunc_name)()))
+        python_model = getattr(nb, pyfunc_name)()
+        assert not hasattr(python_model, "_device")       # the device is picked at load time, never pickled
+        pickled.write_bytes(cloudpickle.dumps(python_model))
     finally:
         sys.modules.pop(nb.__name__, None)
 
     # Fresh interpreter, cwd and sys.path without projects/ecg12-afib: `common` cannot be imported.
     result = subprocess.run([sys.executable, "-I", "-c", _LOAD_AND_PREDICT, str(pickled), str(state_dict)],
-                            capture_output=True, text=True, cwd=tmp_path, timeout=300)
+                            capture_output=True, text=True, cwd=tmp_path, timeout=300, check=False)
     assert result.returncode == 0, result.stderr
     if pyfunc_name == "ArrModelPyfunc":
         assert "frame ['arr_prob', 'arr_flag'] (3, 2) [0.0, 1.0]" in result.stdout
     else:
         assert "array (3, 2) True" in result.stdout
     assert "flat_equal True" in result.stdout
+    assert "device_ok True" in result.stdout                      # model sits on the device it picked
+    expected = "cuda" if torch.cuda.is_available() else "cpu"
+    assert f"{pyfunc_name} loaded on {expected}" in result.stdout.splitlines()   # load_context says so
+    assert "numpy_out ['ndarray float32']" in result.stdout        # outputs come back as CPU numpy

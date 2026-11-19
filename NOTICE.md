@@ -1,7 +1,7 @@
-Copyright (2025) Databricks, Inc.
+Copyright (2026) Databricks, Inc.
 
 This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
-By using this repository and the notebooks within, you consent to Databricks collection and use of usage and tracking information in accordance with our privacy policy at www.databricks/privacypolicy.
+No code in this repository collects usage or tracking information today. If a later version adds usage tracking, this notice will say so, and Databricks will collect and use that information in accordance with its Privacy Notice at https://www.databricks.com/legal/privacynotice.
 
 ## Where the data in this repository comes from
 
@@ -22,5 +22,7 @@ license; today every project generates synthetic data.
   sinus tachycardia. The neurokit2 package adds recording noise.
 - **Patient records** come from `common/patient_info.py`. Age, sex, height, weight, blood
   pressure and acquisition time are random draws; heart rate is measured from the generated
-  ECG. Patient IDs (`SYNPT-...`) and record numbers (`SYN-MRN-...`) are random and marked as
+  ECG. Patient IDs are sequential numbers in a fixed synthetic population (`SYNPT-000000`,
+  `SYNPT-000001`, ...), and each ECG in a batch is given a different one, drawn at random; record
+  numbers (`SYN-MRN-...`) are random digits, fixed for each patient ID. Both are marked as
   synthetic. No names or addresses are generated.

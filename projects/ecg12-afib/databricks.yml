@@ -23,9 +23,13 @@ variables:
   catalog:
     description: >-
       REQUIRED. Unity Catalog catalog for the demo's tables, models and inference tables (no
-      default: each workspace has its own). The SETUP job creates the schema in it if needed.
+      default: each workspace has its own). Letters, digits and underscores only. The SETUP job
+      creates the schema in it if needed.
   schema:
-    description: Unity Catalog schema for the demo's tables, models and inference tables.
+    description: >-
+      Unity Catalog schema for the demo's tables, models and inference tables (letters, digits and
+      underscores only). One schema per deployment: the names inside it are fixed, so the SETUP job
+      records this deployment as the schema's owner and both jobs stop if another deployment owns it.
     default: biosignals
   warehouse_id:
     description: REQUIRED. ID of the SQL warehouse the AI/BI dashboard runs its queries on.
@@ -36,6 +40,15 @@ variables:
       deployment in your workspace uses. The SETUP job stops rather than update an existing endpoint
       that serves another deployment's model.
     default: bio_ecg12
+  mlflow_experiment:
+    description: >-
+      MLflow experiment (an absolute workspace path) that every training and validation run of the
+      SETUP job logs to. Not a bundle resource, so it outlives `bundle destroy` and keeps the run
+      history across redeploys; created on the first run, with its folder when that is missing (a
+      service principal may have no home folder yet). The default sits in the deploying identity's
+      home folder, so it is one experiment per deployer, shared by that deployer's targets and
+      schemas (each run names the <catalog>.<schema> it used).
+    default: /Users/${workspace.current_user.userName}/biosignals-ecg12-afib
   app_name:
     description: >-
       Name of the Databricks App (full target): lowercase letters, digits and hyphens, at most 30
@@ -46,6 +59,26 @@ variables:
     description: >-
       Workspace group that may view the dashboard (CAN_READ) and use the app (CAN_USE).
     default: users
+  embed_credentials:
+    description: >-
+      true (default, for this synthetic demo only): the published dashboard runs every viewer's
+      queries with the deploying identity's credentials, so viewers see what the deployer can see.
+      Set false if you adapt the project to real data, and grant the viewers access to the tables
+      and the warehouse (docs/dashboard.md).
+    default: true
+  remove_after:
+    description: >-
+      Optional expiry date (YYYY-MM-DD) put on both jobs as the tag removeAfter, for workspaces whose
+      cleanup automation deletes resources after that date. Empty by default: the jobs then carry
+      removeAfter with an empty value, which names no date. The SETUP job also tags both serving
+      endpoints with a set date; the app and the dashboard do not get the tag (docs/deploy.md).
+    default: ""
+
+# Tags for every bundle resource that takes tags (here the two jobs; apps and dashboards take none).
+# Target mode development adds its own "dev" tag next to these.
+presets:
+  tags:
+    removeAfter: ${var.remove_after}
 
 # dev/ holds developer analysis scripts and the optional local tests (dev/README.md): never
 # deployed with the bundle.

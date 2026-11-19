@@ -13,7 +13,8 @@
 # MAGIC | `<endpoint_prefix>_afib` (classify) | `bio_ecg12_afib@champion`, pinned to its version | `03_` | `04_` |
 # MAGIC
 # MAGIC **Endpoint names are workspace-wide**, unlike the models and tables (which live in this
-# MAGIC deployment's catalog.schema), so they come from the `endpoint_prefix` parameter (the bundle
+# MAGIC deployment's catalog.schema: the SETUP job's first task, `01_`, has already stopped the job if
+# MAGIC another deployment owns that schema), so they come from the `endpoint_prefix` parameter (the bundle
 # MAGIC variable of the same name, default `bio_ecg12`; `config.endpoint_names`). The first run creates
 # MAGIC both endpoints, and a re-run after a retrain + promotion moves each one to the new champion
 # MAGIC version. **An existing endpoint is updated only if it already serves this deployment's model**
@@ -21,9 +22,18 @@
 # MAGIC the task stops before changing either endpoint, asking for a unique `endpoint_prefix`.
 # MAGIC Inference tables are `<model>_payload` in the same schema (`bio_ecg12_arr_payload`,
 # MAGIC `bio_ecg12_afib_payload`, read by the dashboard's live-serving section): AI Gateway's table
-# MAGIC prefix is the model name, so the table names do not depend on the endpoint names.
+# MAGIC prefix is the model name, so the table names do not depend on the endpoint names. AI Gateway
+# MAGIC writes every request (the whole ECG) and its response (the scores) there, so these tables store
+# MAGIC every ECG the app scores; with real data, treat them as patient data. AI Gateway **usage
+# MAGIC tracking** is on too: a usage record for every request lands in the system table
+# MAGIC `system.serving.endpoint_usage` (the endpoints' served models in `system.serving.served_entities`);
+# MAGIC only account admins can query these, unless one grants access to them.
 # MAGIC
-# MAGIC Parameters: `catalog_name` (required), `schema_name`, `endpoint_prefix`.
+# MAGIC With a `remove_after` date (`YYYY-MM-DD`, the bundle variable of the same name), both endpoints
+# MAGIC also get the tag `removeAfter` with that date, as the jobs do; empty (the default) adds no tag
+# MAGIC and leaves an existing one as it is.
+# MAGIC
+# MAGIC Parameters: `catalog_name` (required), `schema_name`, `endpoint_prefix`, `remove_after`.
 
 # COMMAND ----------
 
@@ -35,7 +45,8 @@
 # MAGIC [AI Runtime environment 5 release notes](https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/five-gpu)
 # MAGIC and its package list `requirements-ai-gpu-5.txt` (checked 2026-10-29). They were checked locally to
 # MAGIC provide every API this notebook calls: `mlflow.deployments` (create / update / list / predict),
-# MAGIC `MlflowClient.get_model_version_by_alias`, and the SDK's `put_ai_gateway(inference_table_config=...)`.
+# MAGIC `MlflowClient.get_model_version_by_alias`, and the SDK's
+# MAGIC `put_ai_gateway(inference_table_config=..., usage_tracking_config=...)`.
 # MAGIC On an environment that already ships them, the install changes nothing.
 
 # COMMAND ----------
@@ -53,6 +64,7 @@ dbutils.library.restartPython()
 
 # DBTITLE 1,Shared config (common/ is one folder up from workflow/)
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.abspath(".."))   # notebook working dir = workflow/
@@ -68,6 +80,11 @@ dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
 dbutils.widgets.text("endpoint_prefix", config.ENDPOINT_PREFIX, label="endpoint_prefix")
 catalog, schema = config.uc_location(dbutils.widgets.get("catalog_name"), dbutils.widgets.get("schema_name"))
 arr_endpoint, afib_endpoint = config.endpoint_names(dbutils.widgets.get("endpoint_prefix"))
+# Optional expiry date for the endpoints' removeAfter tag. Checked here, before any endpoint changes.
+dbutils.widgets.text("remove_after", "", label="remove_after (YYYY-MM-DD, optional)")
+remove_after = dbutils.widgets.get("remove_after").strip()
+if remove_after and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", remove_after):
+    raise ValueError(f"remove_after takes a date YYYY-MM-DD (or nothing), not '{remove_after}'")
 
 # (model, endpoint) pairs, triage first.
 SERVED = (
@@ -80,11 +97,12 @@ print(f"{catalog}.{schema}: {SERVED}")
 
 # DBTITLE 1,Clients
 import time
+
 import mlflow
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.serving import AiGatewayInferenceTableConfig, AiGatewayUsageTrackingConfig, EndpointTag
 from mlflow import MlflowClient
 from mlflow.deployments import get_deploy_client
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.serving import AiGatewayInferenceTableConfig
 
 mlflow.set_registry_uri("databricks-uc")
 deploy_client = get_deploy_client("databricks")
@@ -163,9 +181,11 @@ for model_name, endpoint_name in SERVED:
 
 # COMMAND ----------
 
-# DBTITLE 1,Wait for both ready + enable AI Gateway inference tables (<model>_payload)
+# DBTITLE 1,Wait for both ready + enable AI Gateway inference tables (<model>_payload) + usage tracking
 # The table prefix is the model name (config.payload_table_name), not the endpoint name: the
 # dashboard reads these tables by fixed bare names, whatever endpoint_prefix is.
+# put_ai_gateway replaces the endpoint's whole AI Gateway config, so each call passes every feature
+# this demo uses: one left out would be switched off.
 for model_name, endpoint_name in SERVED:
     wait_for_endpoint_ready(endpoint_name, timeout=3000)
     w.serving_endpoints.put_ai_gateway(
@@ -173,9 +193,24 @@ for model_name, endpoint_name in SERVED:
         inference_table_config=AiGatewayInferenceTableConfig(
             enabled=True, catalog_name=catalog, schema_name=schema, table_name_prefix=model_name,
         ),
+        usage_tracking_config=AiGatewayUsageTrackingConfig(enabled=True),
     )
     print(f"AI Gateway inference table enabled for '{endpoint_name}' -> "
-          f"{config.payload_table(model_name, catalog, schema)}")
+          f"{config.payload_table(model_name, catalog, schema)}; usage tracking enabled "
+          "(system.serving.endpoint_usage)")
+
+# COMMAND ----------
+
+# DBTITLE 1,Tag both endpoints removeAfter=<remove_after> (only when the parameter is set)
+# The bundle's presets.tags reaches only bundle resources, not these SDK-created endpoints, so the
+# SETUP job passes the date here. patch(add_tags=...) sets the key, so a re-run sets the same tag
+# again. Empty: no tag is added or deleted.
+if remove_after:
+    for _, endpoint_name in SERVED:
+        w.serving_endpoints.patch(name=endpoint_name, add_tags=[EndpointTag(key="removeAfter", value=remove_after)])
+        print(f"'{endpoint_name}' tagged removeAfter={remove_after}")
+else:
+    print("remove_after is empty: endpoint tags left as they are")
 
 # COMMAND ----------
 

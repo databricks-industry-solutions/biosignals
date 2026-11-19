@@ -51,7 +51,7 @@ def test_values_are_synthetic_plausible_and_derived(batch_and_records):
         assert 145 <= r.height_cm <= 200 and 30 <= r.weight_kg <= 200
         assert r.bmi == round(r.weight_kg / (r.height_cm / 100) ** 2, 1)    # derived from stored values
         assert 90 <= r.bp_systolic_mmhg <= 200 and r.bp_diastolic_mmhg <= r.bp_systolic_mmhg - 25
-        assert r.acquisition_datetime_utc.tzinfo == dt.timezone.utc
+        assert r.acquisition_datetime_utc.tzinfo == dt.UTC
         assert r.acquisition_datetime_utc.date() == RUN_DATE
         assert 7 <= r.acquisition_datetime_utc.hour <= 19
 
@@ -63,7 +63,7 @@ def test_acquisition_fields_come_from_the_ecg(batch_and_records):
         assert r.n_leads == batch.ecg.shape[1] == 12
         assert r.duration_s == DURATION == 10.0
         assert r.heart_rate_bpm == hr
-    eight = pi.patient_record(pi.patient_id(1), 70, dt.datetime.now(dt.timezone.utc), np.zeros((8, 2500)))
+    eight = pi.patient_record(pi.patient_id(1), 70, dt.datetime.now(dt.UTC), np.zeros((8, 2500)))
     assert eight.n_leads == 8
 
 

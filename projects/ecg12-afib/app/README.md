@@ -1,5 +1,10 @@
 # ECG/AFib 12-lead demo app (APX: React + FastAPI)
 
+> **Not for clinical use as provided.** Synthetic data only; the app's triage results and
+> recommended actions are not a diagnosis or medical advice, and the app is not a medical device.
+> It says so in its header and next to every result. See the
+> [disclaimer](../../../README.md#disclaimer).
+
 Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyproject.toml` points its
 `readme` here, so the wheel build needs this file.
 
@@ -20,6 +25,18 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
   and every `WARMUP_INTERVAL_S` while the page is visible (stopping while it is hidden), shows a
   status chip per endpoint, and gives Triage → Classify its own time limit, a Cancel button and
   Retry.
+- **Rate limits** (`backend/router.py`, `ANALYZE_LIMIT` / `WARMUP_LIMIT`). `/api/analyze` allows
+  10 requests per user and 60 from all users together in any 60 s; `/api/warmup` 12 and 60 in any
+  `WARMUP_INTERVAL_S`. A refused call gets a 429 with a `Retry-After` header and a message, before
+  any endpoint is queried. A user is the `X-Forwarded-User` header the Databricks Apps proxy sets
+  (locally: the client address). When both endpoints answered a warm-up ping less than half of
+  `WARMUP_INTERVAL_S` ago, `/api/warmup` answers from that ping without a new query and without
+  counting it, so many open tabs still query each endpoint about once per interval. The counts and
+  that last answer live in one SQLite file in the system temp folder (`backend/shared_state.py`),
+  so both uvicorn workers (`app.yml`) share them.
+- **Errors.** An ECG that is not 12 leads × 2500 samples of finite numbers is a 422. An endpoint
+  error, an endpoint answer the app cannot read or a failed connection is a 502 whose message
+  points to the app's logs; the endpoint's own error text goes to the log, not to the user.
 - **Configuration** comes from the app's environment, not the code (`backend/core/_config.py`,
   prefix `ECG_DEMO_REACT_`): `ECG_DEMO_REACT_CATALOG` (required; the app does not start without
   it), `ECG_DEMO_REACT_UC_SCHEMA` (default `biosignals`), `ECG_DEMO_REACT_ENDPOINT_PREFIX` (default
@@ -62,6 +79,13 @@ dependency, edit `pyproject.toml` / `package.json`, re-lock against the public r
 (`uv lock --default-index https://pypi.org/simple`; `apx bun install` with the default npm
 registry configured), and commit the lockfiles. A lock written through a mirror records the
 mirror's URLs, and the build refuses it.
+
+**Security floors.** The `overrides` in `package.json` keep six packages the UI pulls in
+indirectly at or above the first release that fixes a published advisory (`seroval-plugins`
+moves with `seroval`); the lower bounds of `starlette` and `pydantic-settings` in
+`pyproject.toml` do the same. After a re-lock, check both lockfiles for known advisories:
+`pip-audit` (with `--vulnerability-service osv`) on the output of `uv export --frozen --no-dev`,
+and an [OSV](https://osv.dev) query for each package version in `bun.lock`.
 
 **Why not plain `apx build`?** apx 0.3.8 starts every UI build with an unversioned
 `bun add --dev` of nine build tools (vite, the TanStack router plugin, Tailwind's vite plugin,

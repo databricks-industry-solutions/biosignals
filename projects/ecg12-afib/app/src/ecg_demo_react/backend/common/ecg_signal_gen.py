@@ -9,7 +9,7 @@ Rhythm classes (``labels``):
 
   0  NSR    normal sinus rhythm: regular RR, P-QRS-T, 60-100 bpm             arr_flag 0
   1  AFIB   atrial fibrillation: irregularly irregular RR, no P waves,        arr_flag 1
-            fibrillatory f-waves (4.5-8.5 Hz), ventricular rate 100-160 bpm
+            fibrillatory f-waves (4.5-8.5 Hz), ventricular rate drawn at 100-160 bpm
   2  OTHER  sinus tachycardia: regular RR, P waves present, 110-160 bpm        arr_flag 1
 
 Triage flags both abnormal classes; the AFib model must then separate AFIB from OTHER.
@@ -24,8 +24,10 @@ synthesized; the other four are computed from I and II, as ECG machines do:
   derived      III = II - I    aVR = -(I + II) / 2    aVL = I - II / 2    aVF = II - I / 2
 
 Every class uses the same beat model (sum of Gaussian P, Q, R, S, T waves, the wave shape
-of McSharry et al. 2003, "A dynamical model for generating synthetic ECG signals"), so the
-classes differ only in rhythm features, not in how they were synthesized.
+of McSharry et al. 2003, "A dynamical model for generating synthetic ECG signals"). The classes
+differ in rhythm (rate, RR regularity) and, for AFib only, in three more ways: no P waves, an
+added fibrillatory baseline (f-waves, ``_f_waves``) and its own, larger beat-to-beat amplitude
+scatter (the AFib branch of ``_wave_trains``).
 
 neurokit2 0.2.12 ``ecg_simulate(method="multileads")`` was checked and not used: it rescales
 every lead to the same -0.4..1.2 mV range (no amplitude differences between leads), its
@@ -56,7 +58,8 @@ NSR, AFIB, OTHER = 0, 1, 2
 LABEL_NAMES = {NSR: "NSR", AFIB: "AFib", OTHER: "Other(tachy)"}
 
 # Heart-rate range (bpm) per class. Rates are drawn from a clipped normal inside the range;
-# the returned heart_rate_bpm is measured from the synthesized beats.
+# the returned heart_rate_bpm is measured from the synthesized beats, so it can fall slightly
+# outside: AFib's irregular beats measure below 100 bpm for about 2-5 % of AFib ECGs.
 HEART_RATE_RANGE_BPM = {NSR: (60.0, 100.0), AFIB: (100.0, 160.0), OTHER: (110.0, 160.0)}
 _HEART_RATE_CENTER_BPM = {NSR: (74.0, 9.0), AFIB: (124.0, 14.0), OTHER: (130.0, 12.0)}
 
@@ -145,14 +148,14 @@ def class_counts(n: int, frac_afib: float = 0.25, frac_other: float = 0.25) -> d
     largest-remainder allocation of the three shares (equal remainders: AFib, then Other, then NSR).
 
     The shares are computed exactly, from each fraction's shortest decimal form (0.58 as 29/50),
-    not in floating point: there 25 x 0.58 is 14.499999999999998, 25 - 25 x 0.02 - 25 x 0.58 is
-    10.000000000000002 and 5 x (1 - 0.3 - 0.3) is 1.9999999999999998, which would accept a count
+    not in floating point: there 25 x 0.58 is 14.4999...98, 25 - 25 x 0.02 - 25 x 0.58 is
+    10.0000...02 and 5 x (1 - 0.3 - 0.3) is 1.9999...98, which would accept a count
     past its share (11 NSR for a share of 10, 1 for a share of 2)."""
     if frac_afib + frac_other > 1.0:
         raise ValueError(f"frac_afib + frac_other = {frac_afib + frac_other} > 1.0")
     # The old counts, from the float products exactly as the old code rounded them.
-    n_afib = min(int(round(n * frac_afib)), n)
-    counts = {AFIB: n_afib, OTHER: min(int(round(n * frac_other)), n - n_afib)}
+    n_afib = min(round(n * frac_afib), n)
+    counts = {AFIB: n_afib, OTHER: min(round(n * frac_other), n - n_afib)}
     counts[NSR] = n - counts[AFIB] - counts[OTHER]
     afib, other = Fraction(str(float(frac_afib))), Fraction(str(float(frac_other)))
     shares = {AFIB: n * afib, OTHER: n * other, NSR: max(n * (1 - afib - other), Fraction(0))}
@@ -305,7 +308,7 @@ def _acquisition_noise(rng: np.random.Generator, noise_level: float) -> np.ndarr
     """Noise for one recorded lead (mV): EMG + motion artifacts (neurokit2), hash, wander.
     signal_distort scales amplitudes by the input's SD unless the SD is 0, so it is called on
     a flat signal to get absolute amplitudes."""
-    import neurokit2 as nk   # here, so notebooks that only need N_SAMPLES skip neurokit2
+    import neurokit2 as nk  # here, so notebooks that only need N_SAMPLES skip neurokit2
 
     t = np.arange(N_SAMPLES) / SAMPLING_RATE
     noise = nk.signal_distort(
@@ -350,5 +353,5 @@ def _synthesize_one(label: int, rng: np.random.Generator, noise_level: float) ->
     by_name.update(derive_limb_leads(by_name["I"], by_name["II"]))
 
     in_window = r_times[(r_times >= 0.0) & (r_times < DURATION)]
-    heart_rate = int(round(60.0 / float(np.mean(np.diff(in_window)))))
+    heart_rate = round(60.0 / float(np.mean(np.diff(in_window))))
     return np.stack([by_name[name] for name in LEADS_12]), heart_rate

@@ -1,6 +1,8 @@
 from __future__ import annotations
-from typing import Annotated, AsyncGenerator, TypeAlias
+
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Annotated, TypeAlias
 
 from databricks.sdk import WorkspaceClient
 from fastapi import FastAPI, Request

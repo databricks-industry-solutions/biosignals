@@ -20,11 +20,13 @@ DAILY run, before unpausing the DAILY schedule (see [`../../docs/deploy.md`](../
 | `test_patient_info.py` | The synthetic, non-PII patient record (`common/patient_info.py`) |
 | `test_training.py` | Training data, training loop and layer table, sample-signal plots (`common/training_data.py`, `training.py`, `ecg_plots.py`) |
 | `test_evaluation.py` | Metrics, the gate's threshold check and the evaluation tables, curves and figures (`common/evaluation.py`, `eval_plots.py`) |
-| `test_scoring_and_io.py` | `common/config.py` (no workspace values, the required catalog), `scoring.py` and `uc_io.py` against small fakes, and driver-side scoring on a local Spark session |
-| `test_notebooks.py` | The workflow notebooks' code, read but not run (required catalog parameter, driver-side batch scoring, the triage history slice, tag values), plus a pickle-and-load check of the training notebooks' inline model code |
-| `test_setup_flow_local.py` | A local run of the SETUP notebooks `01_` → `02_` + `03_` → `04_` with stand-ins for Unity Catalog and MLflow |
-| `test_daily_flow_local.py` | A local run of the DAILY notebooks `06_` → `07_` → `08_` (one date twice, then a second date) with the same kind of stand-ins, then every query of the committed dashboard on the tables they wrote and on stand-in payload tables with one scored request and one app warm-up ping per endpoint (ANSI mode, as on a SQL warehouse; the pings stay out of the live tiles) |
-| `test_repo_consistency.py` | Single source of truth and portability: the app's copy of `common/`, the bundle's variables (required catalog and warehouse, `app_name`), targets (`no_app` without the app, `full` with it and its environment), the dashboard resource, `deploy.sh`, the app's bounded endpoint calls, warm-up route and UI time limit (read, not run: the test environment has no FastAPI), job task graphs and compute, schema and model / endpoint names only in config, no workspace-specific values in any project file, and the committed dashboard (what the builder generates, bare table names, two sections) |
+| `test_scoring_and_io.py` | `common/config.py` (no workspace values, the required catalog, catalog / schema / table names that are plain identifiers before any SQL, the required `deployment_id` and `mlflow_experiment`), `scoring.py` and `uc_io.py` against small fakes (including the schema-ownership record: first deployment recorded, any other refused, a lost race stops), and driver-side scoring on a local Spark session |
+| `test_tracking.py` | `common/tracking.py`: the SETUP job's MLflow experiment becomes active for a service principal with no home folder (the folder is created first), in a new `/Shared` folder, and when `02_` and `03_` create it at once; other errors (folder or experiment creation refused) are raised, not swallowed |
+| `test_notebooks.py` | The workflow notebooks' code, read but not run (required catalog parameter, every MLflow run in the `mlflow_experiment` experiment, driver-side batch scoring, the triage history slice, tag values, 05_'s single AI Gateway call with inference tables and usage tracking), plus a pickle-and-load check of the training notebooks' inline model code |
+| `test_setup_flow_local.py` | A local run of the SETUP notebooks `01_` → `02_` + `03_` → `04_` with stand-ins for Unity Catalog and MLflow (every run in the one `mlflow_experiment`, deployed as a service principal with no home folder), including a second deployment's `01_` in the same schema stopping before it writes, and a failed gate leaving the re-checked champion's tags unchanged |
+| `test_daily_flow_local.py` | A local run of the DAILY notebooks `06_` → `07_` → `08_` (one date twice, then a second date; before SETUP has recorded an owner, and as another deployment, `06_` stops before writing) with the same kind of stand-ins, then every query of the committed dashboard on the tables they wrote and on stand-in payload tables with one scored request and one app warm-up ping per endpoint (ANSI mode, as on a SQL warehouse; the pings stay out of the live tiles) |
+| `test_repo_consistency.py` | Single source of truth and portability: the app's copy of `common/`, the bundle's variables (required catalog and warehouse, `mlflow_experiment`, `app_name`, `embed_credentials`), targets (`no_app` without the app, `full` with it and its environment), the dashboard resource, `deploy.sh`, the app's bounded endpoint calls, warm-up route, UI time limit and not-for-clinical-use notices (read, not run: the test environment has no FastAPI), job task graphs and compute, both jobs' `deployment_id` and the ownership check before each job's first write, SETUP's `mlflow_experiment` (no bundle-managed experiment), the `remove_after` expiry tag (jobs via `presets.tags`, endpoints via SETUP's `05_`, no date committed), schema and model / endpoint names only in config, no workspace-specific values in any project file, and the committed dashboard (what the builder generates, bare table names, two sections) |
+| `test_app_backend.py` | The app's backend: the rate-limit counts and warm-up cache its two workers share in one SQLite file (`backend/shared_state.py`; these run anywhere), and, in the app's own environment (below), the routes against a stand-in serving client: a malformed or non-finite ECG is a short 422 before any endpoint call, an endpoint error or unreadable answer is a 502 that keeps the endpoint's text out of the reply, the per-user and all-users limits (429 with `Retry-After`), the warm-up cache, and the not-for-clinical-use notice on every result |
 
 ## Running them
 
@@ -50,6 +52,17 @@ uv run --no-project --isolated --python 3.11 \
   --with pytest==9.1.1 --with cloudpickle==3.0.0 --with torch==2.9.0 \
   --with pyspark==3.5.3 \
   python -B -m pytest -p no:cacheprovider dev/tests -q
+```
+
+The route tests of `test_app_backend.py` need the app's dependencies (FastAPI, databricks-sdk),
+which this environment does not have, and the `_metadata.py` / `_version.py` that apx writes
+(`app/build_from_lockfiles.sh` creates them); they skip without them. Run them in the app's locked
+environment, with pytest and FastAPI's test client (`httpx`) added for the run only:
+
+```bash
+cd projects/ecg12-afib
+uv run --project app --frozen --with pytest==9.1.1 --with httpx==0.28.1 \
+  python -B -m pytest -p no:cacheprovider dev/tests/test_app_backend.py -q
 ```
 
 Without the script, `python -m pytest dev/tests` (from `projects/ecg12-afib`; `conftest.py` adds

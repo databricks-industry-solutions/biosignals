@@ -1,0 +1,16 @@
+# Ruff settings for this project (run: `uvx ruff check projects/ecg12-afib`).
+# Databricks defines these names in every notebook at runtime; declaring them as builtins stops
+# F821 (undefined name) from firing on workflow/*.py.
+builtins = ["dbutils", "spark", "display"]
+# The code is written to ~120 columns; import sorting wraps at the same width.
+line-length = 120
+# The app, the tests and the serverless job environments all run Python 3.11 or newer.
+target-version = "py311"
+
+[lint.isort]
+combine-as-imports = true
+
+[lint.per-file-ignores]
+# deploy.sh imports config.py with the local python3, which can be older than 3.11 (no datetime.UTC).
+"common/config.py" = ["UP017"]
+"app/src/ecg_demo_react/backend/common/config.py" = ["UP017"]

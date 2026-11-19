@@ -24,8 +24,14 @@
 # MAGIC Re-running a date reproduces the same rows (everything is seeded by the date) and overwrites
 # MAGIC the table. Column comments (units, which leads are derived) are stored in Unity Catalog.
 # MAGIC
+# MAGIC **One schema per deployment.** As the first task of the DAILY job it first checks, before writing
+# MAGIC anything, that `ecg12_afib_deployment` in the schema names this deployment (the SETUP job records
+# MAGIC it); otherwise it stops, and the DAILY job with it, so this deployment never writes into a schema
+# MAGIC another deployment uses.
+# MAGIC
 # MAGIC Parameters: `run_date` (`YYYY-MM-DD`, empty = today UTC; the daily job passes its start
-# MAGIC date), `catalog_name`, `schema_name`.
+# MAGIC date), `catalog_name`, `schema_name`, `deployment_id` (required: the job passes
+# MAGIC `<workspace id>:<bundle root path>`).
 
 # COMMAND ----------
 
@@ -49,16 +55,20 @@ from common.ecg_signal_gen import describe_lead, generate_ecg_batch
 
 # COMMAND ----------
 
-# DBTITLE 1,Parameters (usable as a job task; one shared run_date)
+# DBTITLE 1,Parameters (usable as a job task; one shared run_date) + check the schema is this deployment's
 dbutils.widgets.text(config.RUN_DATE_PARAM, "", label="run_date (YYYY-MM-DD, empty = today UTC)")
 dbutils.widgets.text("catalog_name", "", label="UC_catalog_name (required)")
 dbutils.widgets.text("schema_name", config.SCHEMA, label="UC_schema_name")
+dbutils.widgets.text(config.DEPLOYMENT_ID_PARAM, "", label="deployment_id (required, set by the job)")
 
 run_date = config.resolve_run_date(dbutils.widgets.get(config.RUN_DATE_PARAM))
 catalog_name, schema_name = config.uc_location(dbutils.widgets.get("catalog_name"),
                                                dbutils.widgets.get("schema_name"))
+deployment_id = config.resolve_deployment_id(dbutils.widgets.get(config.DEPLOYMENT_ID_PARAM))
+# Before anything is written: the schema must belong to this deployment (SETUP records it).
+uc_io.check_schema_owner(spark, config.uc_name(config.DEPLOYMENT_TABLE, catalog_name, schema_name), deployment_id)
 write_table = config.daily_table(config.BATCH_TABLE_PREFIX, run_date, catalog_name, schema_name)
-print(f"run_date: {run_date}\nwrite   : {write_table}")
+print(f"run_date: {run_date}\nowner   : this deployment ({deployment_id})\nwrite   : {write_table}")
 
 # COMMAND ----------
 

@@ -9,7 +9,10 @@ at one Delta version, train once with the fixed `TRAIN_PARAMS` (no hyperparamete
 everything to MLflow (all settings and the dataset identity as params; `train_loss`, `val_loss`,
 `val_accuracy` per epoch; `final_val_*` metrics; tags; the pyfunc model with signature and input
 example), and register a new UC model version with the alias **`challenger`**. They never touch
-`champion`.
+`champion`. Their runs, and the gate's below, all go to one MLflow experiment, the bundle variable
+`mlflow_experiment` (default `/Users/<deployer>/biosignals-ecg12-afib`), which `bundle destroy`
+leaves in place, so the run history accrues across redeploys ([Where the MLflow runs
+go](deploy.md#where-the-mlflow-runs-go)).
 
 `04_validate_and_promote` scores each challenger on the **`holdout`** split, which the training
 notebooks never read, at the Delta version the challenger was trained beside, and checks
@@ -23,13 +26,21 @@ notebooks never read, at the Delta version the challenger was trained beside, an
 Both must pass or neither is promoted: on a pass `champion` moves to both challengers (if the second
 move fails, the first is put back) and then `challenger` is cleared, so after a pass each model shows
 only `@champion`. On a failure nothing moves, `challenger` stays on the failed version (tagged
-`validation_status=invalid`) for inspection, the task fails with the reasons and `05_` never runs. So
-`challenger` = a candidate awaiting (or that failed) the gate, `champion` = what is served and
-batch-scored. A model that was not retrained is re-checked at its `champion` beside the retrained
-one; with no `challenger` at all (re-running `04_` alone after a pass) `04_` exits cleanly with a
-note. The outcome is recorded in an MLflow run and as model-version tags (`validation_status`,
+`gate_result=failed`, and `validation_status=invalid` if it missed its own thresholds) for
+inspection, the task fails with the reasons and `05_` never runs. So `challenger` = a candidate
+awaiting (or that failed) the gate, `champion` = what is served and batch-scored. With no
+`challenger` at all (re-running `04_` alone after a pass) `04_` exits cleanly with a note. The
+outcome is recorded in an MLflow run and as tags on each challenger version (`validation_status`,
 `gate_result`, `holdout_*`). Aliases are lowercase (`champion`, `challenger`), as Unity Catalog
 stores them.
+
+**A model that was not retrained is re-checked at its `champion`** beside the retrained one, so the
+pair is always gated together. That version keeps serving whatever the gate decides, so the gate
+leaves its version tags as the gate that promoted it wrote them: a failed gate never tags a
+still-serving champion `invalid` or `failed`. The re-check is recorded in the gate's MLflow run
+(`<model>.candidate_alias` = `champion`, its hold-out metrics and evaluation artifacts), and if
+the champion itself misses the thresholds (for example after you raised them) the failure message
+names it as the serving champion, not retrained, so you can retrain it or review the thresholds.
 
 **Tag values and tag policies.** A Unity Catalog tag policy can restrict the values a tag key may
 take, and Unity Catalog then rejects any other value on a model version. The gate writes
@@ -53,9 +64,13 @@ training run also logs the model's layer table, `model_architecture.md` (output 
 parameters per layer; 10,514 in total), and `n_parameters`. Plots: `common/eval_plots.py`, in the
 same white style as `common/ecg_plots.py`.
 
-**Why the metrics sit near 1.0.** The synthetic rhythms are trivially separable by design: heart
-rate alone separates triage (NSR is drawn at 60–100 bpm, AFib and Other at 100–160 bpm), and
-beat-to-beat irregularity separates AFib (RR intervals vary ~20 % in AFib, ~3 % in sinus rhythm).
+**Why the metrics sit near 1.0.** The synthetic rhythms are close to separable by design. Heart
+rate alone nearly separates triage: NSR is drawn at 60–100 bpm, AFib and Other at 100–160 bpm, so
+one heart-rate cut-off (about 95 bpm) calls about 99 % of ECGs right (99.7 % of the training
+dataset), not all, because AFib's irregular beats measure below 100 bpm for about 2–5 % of AFib
+ECGs. Beat-to-beat irregularity separates AFib (RR intervals vary ~20 % in AFib, ~3 % in sinus
+rhythm), and AFib also differs in more than rhythm (no P waves, f-waves, more beat-to-beat
+amplitude scatter).
 Validation and hold-out metrics therefore sit near ceiling (~1.0). This is a clean synthetic
 showcase of the MLOps (machine-learning operations) cycle, not a hard ML problem, and the
 thresholds are engineering floors for this data, not clinical criteria. For the same reason the

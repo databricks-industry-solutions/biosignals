@@ -86,6 +86,10 @@ function App() {
           <Ext href={links?.dashboard}>AI/BI</Ext> · <Ext href={links?.dailyJob}>Lakeflow</Ext> ·{" "}
           <Ext href={links?.apps}>Databricks Apps</Ext>
         </p>
+        <p className="mt-2 text-xs text-slate-700">
+          <strong>Not for clinical use.</strong> A demonstration on synthetic ECGs, not a medical device:
+          its triage results and recommended actions are not a diagnosis or medical advice.
+        </p>
       </header>
 
       <div className="mb-4 flex gap-1 border-b">
@@ -177,8 +181,9 @@ function LiveTab({ links, cfg }: { links?: Links; cfg?: AppConfigOut }) {
             New reading
           </Button>
           <p className="mt-3 text-xs text-muted-foreground">
-            Each ECG is read in and scored live, and not stored; each model call is logged to its AI
-            Gateway inference table in Unity Catalog. Batch ECGs land in Unity Catalog (Delta).
+            Each ECG is read in and scored live. The app writes no table itself, but AI Gateway logs
+            every model call, with the ECG sent and the scores returned, to that endpoint's
+            inference table in Unity Catalog. Batch ECGs land in Unity Catalog (Delta).
           </p>
           <Ext href={links?.infTable} className="text-xs font-medium text-slate-700 underline underline-offset-2">
             Inspect data lineage in Unity Catalog ↗
@@ -333,19 +338,27 @@ async function withTimeLimit<T>(limitS: number, ctl: AbortController, call: (sig
   }
 }
 
-/** What to show for a failed call: the backend's ServingError message when the reply has one. */
+/** The `detail` object of a backend error reply (a ServingError or RateLimited), if it has one. */
+function errorDetail(err: unknown): Record<string, unknown> | undefined {
+  if (!(err instanceof ApiError)) return undefined;
+  const body = err.body;
+  if (typeof body !== "object" || body === null || !("detail" in body)) return undefined;
+  const detail = body.detail;
+  return typeof detail === "object" && detail !== null ? (detail as Record<string, unknown>) : undefined;
+}
+
+/** What to show for a failed call: the backend's message when the reply has one. */
 function errorMessage(err: unknown): string {
-  if (err instanceof ApiError) {
-    const body = err.body;
-    if (typeof body === "object" && body !== null && "detail" in body) {
-      const detail = body.detail;
-      if (typeof detail === "object" && detail !== null && "message" in detail && typeof detail.message === "string") {
-        return detail.message;
-      }
-    }
-    return `The app answered HTTP ${err.status}. Try again.`;
-  }
+  const message = errorDetail(err)?.message;
+  if (typeof message === "string") return message;
+  if (err instanceof ApiError) return `The app answered HTTP ${err.status}. Try again.`;
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Seconds to wait before the next call when the app's own rate limit refused this one (RateLimited). */
+function retryAfterS(err: unknown): number | undefined {
+  const seconds = errorDetail(err)?.retry_after_s;
+  return typeof seconds === "number" ? seconds : undefined;
 }
 
 type Warmup = { statuses: Record<string, EndpointStatus>; pinging: boolean; error?: string };
@@ -353,8 +366,9 @@ type Warmup = { statuses: Record<string, EndpointStatus>; pinging: boolean; erro
 /**
  * Wakes both endpoints when the Live tab opens and keeps them awake while it is visible: pings
  * /api/warmup at once, again right after a ping that found an endpoint still cold (each ping waits
- * up to serving_timeout_s), then every warmup_interval_s. It stops while the page is hidden
- * (document.visibilityState) and when the tab unmounts, and re-checks from scratch on return.
+ * up to serving_timeout_s), then every warmup_interval_s; after a refusal by the app's rate limit,
+ * once the wait it names is over. It stops while the page is hidden (document.visibilityState) and
+ * when the tab unmounts, and re-checks from scratch on return.
  * Each ping logs one row per endpoint in that endpoint's payload table (backend/router.py), which
  * the dashboard's live-serving section leaves out.
  */
@@ -374,17 +388,19 @@ function useEndpointWarmup(timeoutS?: number, intervalS?: number): Warmup {
       setWarm((w) => ({ ...w, pinging: true }));
       let next: Warmup;
       let cold = false;
+      let retryS: number | undefined;   // set when the app's rate limit refused the ping
       try {
         const { data } = await withTimeLimit(limitS, mine, (s) => warmup({ signal: s }));
         next = { statuses: Object.fromEntries(data.endpoints.map((e) => [e.endpoint, e])), pinging: false };
         cold = data.endpoints.some((e) => e.status === "cold");
       } catch (err) {
         next = { statuses: {}, pinging: false, error: errorMessage(err) };
+        retryS = retryAfterS(err);
       }
       if (mine.signal.reason instanceof StoppedError) return;   // hidden or closed meanwhile: no new ping
       setWarm(next);
       coldPings = cold ? coldPings + 1 : 0;
-      timer = window.setTimeout(ping, (cold && coldPings < MAX_COLD_PINGS ? 0 : everyS) * 1000);
+      timer = window.setTimeout(ping, (retryS ?? (cold && coldPings < MAX_COLD_PINGS ? 0 : everyS)) * 1000);
     }
     const stop = () => {
       window.clearTimeout(timer);
@@ -516,6 +532,8 @@ function ActionCard({ analysis }: { analysis: AnalyzeResponse }) {
     <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
       <div className="text-xs font-semibold text-muted-foreground">4 · Recommended action</div>
       <div className="mt-1 font-medium">{action}</div>
+      {/* The backend's not-for-clinical-use notice (models.py NOT_FOR_CLINICAL_USE), sent with every result. */}
+      {analysis.notice && <p className="mt-2 text-[11px] text-muted-foreground">{analysis.notice}</p>}
     </div>
   );
 }

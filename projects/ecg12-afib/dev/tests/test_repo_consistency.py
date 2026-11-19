@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import DEMO_ROOT, SP_EXPERIMENT
 
 from common import config
-from conftest import DEMO_ROOT
 
 APP_COPY = DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend" / "common"
 MIRRORED = ["__init__.py", "config.py", "ecg_signal_gen.py", "patient_info.py"]
@@ -66,7 +66,8 @@ def test_bundle_variables_have_no_workspace_defaults():
     bundle = _bundle()
     assert bundle["bundle"]["name"] == "biosignals-ecg12-afib"
     variables = bundle["variables"]
-    assert set(variables) == {"catalog", "schema", "warehouse_id", "endpoint_prefix", "app_name", "viewer_group"}
+    assert set(variables) == {"catalog", "schema", "warehouse_id", "endpoint_prefix", "mlflow_experiment",
+                              "app_name", "viewer_group", "embed_credentials", "remove_after"}
     for required in ("catalog", "warehouse_id"):
         assert not {"default", "lookup"} & set(variables[required]), required
         assert variables[required]["description"].startswith("REQUIRED."), required
@@ -76,10 +77,23 @@ def test_bundle_variables_have_no_workspace_defaults():
     assert APP_NAME_PATTERN.fullmatch(app_name) and len(app_name) <= APP_NAME_MAX
     assert "workspace-wide" in variables["app_name"]["description"]
     assert variables["viewer_group"]["default"] == "users"
+    # The deployer's credentials for every dashboard viewer: on for this synthetic data, off for real data.
+    assert variables["embed_credentials"]["default"] is True
+    assert "real data" in variables["embed_credentials"]["description"]
+    # One schema per deployment: the schema's description says so.
+    assert "One schema per deployment" in variables["schema"]["description"]
     # Workspace-wide endpoint names: one prefix, default = config's (the app and 05_ fall back to it).
     assert variables["endpoint_prefix"]["default"] == config.ENDPOINT_PREFIX
     assert "workspace-wide" in variables["endpoint_prefix"]["description"]
     config.endpoint_names(variables["endpoint_prefix"]["default"])          # a valid prefix
+    # One MLflow experiment per deploying identity, in its home folder, named after the bundle; no user
+    # is hardcoded. The folder need not exist (a service principal may have none): the notebooks
+    # create it before the experiment (tracking.use_experiment, test_tracking.py).
+    experiment = variables["mlflow_experiment"]["default"]
+    assert experiment == f"/Users/${{workspace.current_user.userName}}/{bundle['bundle']['name']}"
+    assert experiment.replace("${workspace.current_user.userName}", "<id>") == SP_EXPERIMENT.replace(
+        SP_EXPERIMENT.split("/")[2], "<id>")                       # the path the SP tests exercise
+    assert "bundle destroy" in variables["mlflow_experiment"]["description"]
     for name, target in bundle["targets"].items():
         assert target["mode"] == "development", name
         assert not {"host", "profile"} & set(target.get("workspace") or {}), name
@@ -132,14 +146,15 @@ def test_dashboard_is_a_bundle_resource_on_the_bundle_variables():
     assert (DEMO_ROOT / "resources" / dash["file_path"]).resolve() == DEMO_ROOT / "dashboards" / "ecg12_afib.lvdash.json"
     assert (dash["warehouse_id"], dash["dataset_catalog"], dash["dataset_schema"]) == (
         "${var.warehouse_id}", "${var.catalog}", "${var.schema}")
-    assert dash["embed_credentials"] is True and "parent_path" not in dash
+    assert dash["embed_credentials"] == "${var.embed_credentials}" and "parent_path" not in dash
     assert dash["permissions"] == [{"group_name": "${var.viewer_group}", "level": "CAN_READ"}]
 
 
 def test_app_bounds_every_endpoint_call_and_tags_its_warmup_pings():
-    """Read, not run (the test environment has no FastAPI): one serving client bounded by
-    SERVING_TIMEOUT_S for every live call, /api/warmup tagged with WARMUP_REQUEST_ID, and the UI's
-    limit on Triage -> Classify built on the backend's bound (2 x (30 + 10) = 80 s)."""
+    """Read, not run (this environment has no FastAPI; test_app_backend.py runs the routes in the
+    app's own): one serving client bounded by SERVING_TIMEOUT_S for every live call, /api/warmup
+    tagged with WARMUP_REQUEST_ID, the UI's limit on Triage -> Classify built on the backend's bound
+    (2 x (30 + 10) = 80 s), and its not-for-clinical-use notices."""
     assert (config.SERVING_TIMEOUT_S, config.WARMUP_INTERVAL_S, config.WARMUP_REQUEST_ID) == (30, 600, "app-warmup")
     assert config.WARMUP_INTERVAL_S < 30 * 60                     # inside the endpoints' 30 min idle window
     backend = DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "backend"
@@ -160,11 +175,12 @@ def test_app_bounds_every_endpoint_call_and_tags_its_warmup_pings():
     ui = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "ui" / "routes" / "index.tsx").read_text()
     assert "const UI_MARGIN_S = 10;" in ui and "2 * (cfg.serving_timeout_s + UI_MARGIN_S)" in ui
     for text in ("Cancel</Button>", "Retry</Button>", "New reading", "Reading…", "Each ECG is read in and scored live",
-                 "Synthetic, non-PII", 'document.addEventListener("visibilitychange"', "c.daily_job_id"):
+                 "Synthetic, non-PII", 'document.addEventListener("visibilitychange"', "c.daily_job_id",
+                 "<strong>Not for clinical use.</strong>", "{analysis.notice}", "retryAfterS(err)"):
         assert text in ui, text
     api = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "ui" / "lib" / "api.ts").read_text()
     for generated in ("export const warmup = async", "daily_job_id: string | null;", "serving_timeout_s: number;",
-                      "export interface ServingError {"):
+                      "export interface ServingError {", "export interface RateLimited {", "notice?: string;"):
         assert generated in api, generated                                 # the TS client was regenerated
 
 
@@ -178,10 +194,66 @@ def test_deploy_script_is_valid_bash_and_reads_endpoint_names_from_config():
     # --skip-embed-allowlist makes no settings call: the skip branch comes before the first one.
     step8 = script[script.index('step "8/8'):]
     assert step8.index("SKIP_ALLOWLIST -eq 1") < step8.index("databricks settings")
+    # Step 1 reads the embedding settings (unless skipped), so a caller who cannot stops before
+    # anything is built or deployed; step 8 writes back with the etag it read (optimistic concurrency).
+    step1 = script[:script.index('step "2/8')]
+    assert step1.index("SKIP_ALLOWLIST -eq 0") < step1.index("aibi-dashboard-embedding-access-policy get")
+    assert step1.index("SKIP_ALLOWLIST -eq 0") < step1.index("read_approved_domains >/dev/null")
+    assert "--arg etag" in step8 and "{etag: $etag}" in step8 and "attempt" in step8
+    # Catalog and schema are checked with the notebooks' own check, before anything is deployed.
+    assert "config.uc_location(sys.argv[1], sys.argv[2])" in step1 and '"$CATALOG" "$SCHEMA"' in step1
+    assert '--var "embed_credentials=$EMBED_CREDENTIALS"' in script
+    # The MLflow experiment, when given, gets the notebooks' own check before anything is deployed.
+    assert '--var "mlflow_experiment=$MLFLOW_EXPERIMENT"' in script
+    assert "config.resolve_mlflow_experiment(sys.argv[1])" in step1 and '"$MLFLOW_EXPERIMENT"' in step1
     for step in ("bundle validate --strict", "bundle deploy", "bundle run ecg12_afib_setup",
                  "serving-endpoints update-permissions", "CAN_QUERY", "bundle run ecg12_afib_app",
                  "aibi-dashboard-embedding-approved-domains"):
         assert step in script, step
+
+
+def test_remove_after_tags_the_jobs_with_no_date_committed():
+    """remove_after (empty by default: no date ships) is the removeAfter tag on every taggable bundle
+    resource, set once in presets.tags; deploy.sh --remove-after forwards a YYYY-MM-DD date to it.
+    The SDK-created serving endpoints get it from the SETUP job: 05_ checks the date's format before
+    changing any endpoint, tags both endpoints only when it is set, and never deletes the tag."""
+    bundle = _bundle()
+    variable = bundle["variables"]["remove_after"]
+    assert variable["default"] == "" and "type" not in variable          # a plain string: --var / BUNDLE_VAR_
+    assert "YYYY-MM-DD" in variable["description"]
+    assert bundle["presets"] == {"tags": {"removeAfter": "${var.remove_after}"}}
+    assert all("presets" not in target for target in bundle["targets"].values())
+    for path, job in _jobs().values():
+        assert "tags" not in job, path.name                     # the jobs take presets.tags as they are
+    setup, daily = _jobs()["ecg12_afib_setup"][1], _jobs()["ecg12_afib_daily"][1]
+    assert {p["name"]: p["default"] for p in setup["parameters"]}["remove_after"] == "${var.remove_after}"
+    assert "remove_after" not in {p["name"] for p in daily["parameters"]}      # DAILY creates no endpoint
+    serve = "\n".join("" if line.startswith("# MAGIC") else line
+                      for line in (DEMO_ROOT / "workflow" / "05_serve_endpoints.py").read_text().splitlines())
+    assert 'dbutils.widgets.text("remove_after", "", ' in serve               # optional: empty is valid
+    # Read from the parameter, and only there: a hard-coded value can't silently disable the tagging.
+    assert re.findall(r"^remove_after\s*=.*$", serve, re.MULTILINE) == ['remove_after = dbutils.widgets.get("remove_after").strip()']
+    check = 'if remove_after and not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", remove_after):'
+    assert check in serve and serve.index(check) < serve.index("full, ver = deploy(model_name, endpoint_name, existing)")
+    tag = 'w.serving_endpoints.patch(name=endpoint_name, add_tags=[EndpointTag(key="removeAfter", value=remove_after)])'
+    assert serve.count(tag) == 1 and "delete_tags" not in serve
+    tagging = serve[serve.index("\nif remove_after:\n"):]
+    assert tagging.index("for _, endpoint_name in SERVED:") < tagging.index(tag) < tagging.index("\nelse:\n")
+    assert serve.index("w.serving_endpoints.put_ai_gateway(") < serve.index(tag)     # after the endpoints exist
+    # No committed file sets the tag to a date (the docs show a placeholder).
+    dated = re.compile(r"remove[_-]?after\W{0,4}\d{4}-\d{2}-\d{2}", re.IGNORECASE)
+    for path in _project_files():
+        assert not dated.search(path.read_text()), path.relative_to(DEMO_ROOT)
+
+    script = (DEMO_ROOT / "deploy.sh").read_text()
+    assert "--remove-after YYYY-MM-DD" in script and '--var "remove_after=$REMOVE_AFTER"' in script
+    for value in ("2030-1-31", "20300131", "2030-01-31x", "31-01-2030"):
+        # Fails in the argument check, before any command or CLI call.
+        result = subprocess.run(["bash", str(DEMO_ROOT / "deploy.sh"), "-p", "unused", "--catalog", "c",
+                                 "--warehouse-id", "w", "--remove-after", value],
+                                capture_output=True, text=True, check=False)
+        assert result.returncode == 2, value
+        assert f"--remove-after takes a date YYYY-MM-DD, not '{value}'" in result.stderr, value
 
 
 def _jobs():
@@ -232,8 +304,28 @@ def test_job_tasks_point_at_existing_notebooks_on_serverless():
     # Only SETUP serves endpoints (05_), so only SETUP gets the endpoint prefix.
     assert {p["name"]: p["default"] for p in setup["parameters"]}["endpoint_prefix"] == "${var.endpoint_prefix}"
     assert "endpoint_prefix" not in {p["name"] for p in daily["parameters"]}
+    # Only SETUP logs MLflow runs (02_, 03_, 04_), so only SETUP gets the experiment. It is a plain
+    # workspace path, not a bundle-managed experiment, so `bundle destroy` leaves the run history.
+    assert {p["name"]: p["default"] for p in setup["parameters"]}[config.MLFLOW_EXPERIMENT_PARAM] == (
+        "${var.mlflow_experiment}")
+    assert config.MLFLOW_EXPERIMENT_PARAM not in {p["name"] for p in daily["parameters"]}
+    for path in [DEMO_ROOT / "databricks.yml", *sorted((DEMO_ROOT / "resources").glob("*.yml"))]:
+        resources = (yaml.safe_load(path.read_text()) or {}).get("resources") or {}
+        assert "experiments" not in resources, path.name
     params = {p["name"]: p["default"] for p in daily["parameters"]}
     assert params[config.RUN_DATE_PARAM] == "{{job.start_time.iso_date}}"
+    # One schema per deployment: both jobs pass the same deployment identity, which 01_ records and
+    # 01_ / 06_ (each job's first task) check.
+    for job in (setup, daily):
+        assert {p["name"]: p["default"] for p in job["parameters"]}[config.DEPLOYMENT_ID_PARAM] == (
+            "{{workspace.id}}:${workspace.root_path}")
+    for notebook, call in (("01_generate_training_data.py", "uc_io.claim_schema("),
+                           ("06_generate_batch_data.py", "uc_io.check_schema_owner(")):
+        code = (DEMO_ROOT / "workflow" / notebook).read_text()
+        owner_check = code.index(call)
+        assert code.index("config.resolve_deployment_id(") < owner_check, notebook
+        assert owner_check < min(code.index(write) for write in ("overwrite_table(", "write_date_slice(")
+                                 if write in code), notebook
     assert daily["schedule"]["pause_status"] == "PAUSED"
 
     def accelerators(job):
@@ -311,7 +403,9 @@ WORKSPACE_SPECIFIC = {
     "personal workspace path": re.compile(r"/Users/[^/<\s\"'`]+@"),
     "Databricks email": re.compile(r"[\w.+-]+@databricks\.com"),
     "internal package mirror": re.compile(r"(?:pypi|npm)-proxy"),
-    "workspace or dashboard id": re.compile(r"\b(?:\d{15,16}|[0-9a-f]{32})\b"),
+    # Not the digits of a decimal number (the 15 after "14." in a float, or before ".5"); an id
+    # followed by a plain "." still counts, as in an app URL "<app>-<workspace id>.aws...".
+    "workspace or dashboard id": re.compile(r"(?<!\d\.)\b(?:\d{15,16}|[0-9a-f]{32})\b(?!\.\d)"),
 }
 
 
@@ -333,7 +427,8 @@ BUILDER = DEMO_ROOT / "dashboards" / "build_ecg_demo_dashboard.py"
 
 
 def test_committed_dashboard_is_what_the_builder_generates():
-    result = subprocess.run([sys.executable, "-B", str(BUILDER), "--check"], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-B", str(BUILDER), "--check"], capture_output=True, text=True,
+                            check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

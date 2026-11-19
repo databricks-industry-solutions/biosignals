@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # projects/ecg12-afib -> common/
-from common import config  # noqa: E402
+from common import config
 
 OUT = Path(__file__).resolve().parent / "ecg12_afib.lvdash.json"
 
@@ -228,16 +228,16 @@ PERCENT = {"type": "number-percent", "decimalPlaces": {"type": "max", "places": 
 
 layout = [
     text("title", ["## ECG/AFib on Databricks — 12-lead triage → classify\n", "\n",
-                   "Synthetic 12-lead ECGs with synthetic patient records land in Unity Catalog; an *arr* (triage) "
-                   "model flags abnormal rhythms; an *AFib* model classifies the flagged. Two scoring paths, two "
-                   "sections below. The single-day batch tiles show the **latest batch date**."], 0, 0, 12, 2),
+                   ("Synthetic 12-lead ECGs with synthetic patient records land in Unity Catalog; an *arr* (triage) "
+                    "model flags abnormal rhythms; an *AFib* model classifies the flagged. Two scoring paths, two "
+                    "sections below. The single-day batch tiles show the **latest batch date**.")], 0, 0, 12, 2),
 
     # --- Batch monitoring ------------------------------------------------------------------------
-    text("hdr-batch", ["### Batch monitoring — DAILY job (models loaded from Unity Catalog @"
-                       f"{config.CHAMPION_ALIAS}, scored in the job; endpoints not called)\n", "\n",
-                       f"Sources: `{TRI}` (every ECG of every day) and `{INF.lower()}` (flagged ECGs of every "
-                       f"day). Single-day tiles: the latest `{DAY}` in `{TRI}`. These tiles show an error until "
-                       "the DAILY job has run once."], 0, 2, 12, 2),
+    text("hdr-batch", [("### Batch monitoring — DAILY job (models loaded from Unity Catalog @"
+                        f"{config.CHAMPION_ALIAS}, scored in the job; endpoints not called)\n"), "\n",
+                       (f"Sources: `{TRI}` (every ECG of every day) and `{INF.lower()}` (flagged ECGs of every "
+                        f"day). Single-day tiles: the latest `{DAY}` in `{TRI}`. These tiles show an error until "
+                        "the DAILY job has run once.")], 0, 2, 12, 2),
     counter("kpi-total", "funnel", "total_signals", "ECGs landed (latest day)", 0, 4),
     counter("kpi-flagged", "funnel", "flagged_abnormal", "Flagged abnormal by triage (latest day)", 4, 4),
     counter("kpi-afib", "funnel", "afib_positive", "AFib-positive by classifier (latest day)", 8, 4),
@@ -271,24 +271,25 @@ layout = [
         ("hr_bpm", "HR (bpm)"), ("bp_mmhg", "BP (mmHg)"), ("true_rhythm", "True rhythm"),
         ("p_afib", "p(AFib)"), ("afib_call", "AFib call"), ("acquired_utc", "Acquired (UTC)")],
         "Flagged-patient worklist (latest day, top 25 by AFib probability)", (0, 23, 12, 6)),
-    text("patient-note", ["**Who is being flagged.** Every ECG row carries a synthetic patient + acquisition "
-                          "record (`mrn`, age, sex, height, weight, BMI, blood pressure, heart rate measured from the "
-                          "ECG, acquisition time). AFib rises with age, as in real populations. The worklist ranks the "
-                          "day's flagged patients by AFib probability — the queue a cardiology reviewer would work "
-                          "through."], 0, 29, 12, 2),
+    text("patient-note", [("**Who is being flagged.** Every ECG row carries a synthetic patient + acquisition "
+                           "record (`mrn`, age, sex, height, weight, BMI, blood pressure, heart rate measured from the "
+                           "ECG, acquisition time). The generator assigns AFib more often to older synthetic patients, "
+                           "so the age view has a pattern to show. The worklist sorts the day's flagged synthetic "
+                           "records by AFib probability to show what a review queue on these tables could look like; "
+                           "it is a demo, not a clinical worklist.")], 0, 29, 12, 2),
 
     # --- Live serving ----------------------------------------------------------------------------
     text("hdr-live", ["### Live serving — the app (endpoint calls logged by AI Gateway)\n", "\n",
-                      f"Sources: `{ARR_PAY}` and `{AFIB_PAY}`, the endpoints' inference tables. Each "
-                      "*Triage → Classify* click in the app adds a row to the triage table, and one to the classify "
-                      "table when the ECG is flagged. Batch scoring never appears here. Execution time is the "
-                      "model's inference time only (no network overhead). The app's warm-up pings (one single-ECG "
-                      "request per endpoint, keeping the scale-to-zero endpoints awake; "
-                      f"`client_request_id = '{config.WARMUP_REQUEST_ID}'`) are left out of every tile below and "
-                      "counted on their own. **These tiles show an error until AI "
-                      "Gateway has delivered the first inference-table logs** (best effort, typically within about an "
-                      "hour of the first app request): until then the tables have no columns but "
-                      "`databricks_request_id`."],
+                      (f"Sources: `{ARR_PAY}` and `{AFIB_PAY}`, the endpoints' inference tables. Each "
+                       "*Triage → Classify* click in the app adds a row to the triage table, and one to the classify "
+                       "table when the ECG is flagged. Batch scoring never appears here. Execution time is the "
+                       "model's inference time only (no network overhead). The app's warm-up pings (one single-ECG "
+                       "request per endpoint, keeping the scale-to-zero endpoints awake; "
+                       f"`client_request_id = '{config.WARMUP_REQUEST_ID}'`) are left out of every tile below and "
+                       "counted on their own. **These tiles show an error until AI "
+                       "Gateway has delivered the first inference-table logs** (best effort, typically within about an "
+                       "hour of the first app request): until then the tables have no columns but "
+                       "`databricks_request_id`.")],
          0, 31, 12, 3),
 ]
 LIVE_Y = 34                                     # first row under the live-section header
@@ -334,13 +335,13 @@ live_layout = [
 layout += live_layout
 LINEAGE_Y = max(item["position"]["y"] + item["position"]["height"] for item in live_layout)
 layout += [
-    text("lineage-note", ["**One governed platform.** Batch lineage: "
-                          f"`{config.BATCH_TABLE_PREFIX}<date>` → `{config.TRIAGED_TABLE_PREFIX}<date>` "
-                          f"(+ `{TRI}`) → `{INF.lower()}`. Live: app → the triage and classify serving "
-                          f"endpoints → `{ARR_PAY}` / `{AFIB_PAY}`. Both paths use the same "
-                          f"`@{config.CHAMPION_ALIAS}` "
-                          "model versions, promoted by the SETUP job's validation gate. Cheap triage screens every "
-                          "ECG; the costlier AFib model runs only on the flagged."], 0, LINEAGE_Y, 12, 2),
+    text("lineage-note", [("**One governed platform.** Batch lineage: "
+                           f"`{config.BATCH_TABLE_PREFIX}<date>` → `{config.TRIAGED_TABLE_PREFIX}<date>` "
+                           f"(+ `{TRI}`) → `{INF.lower()}`. Live: app → the triage and classify serving "
+                           f"endpoints → `{ARR_PAY}` / `{AFIB_PAY}`. Both paths use the same "
+                           f"`@{config.CHAMPION_ALIAS}` "
+                           "model versions, promoted by the SETUP job's validation gate. Cheap triage screens every "
+                           "ECG; the costlier AFib model runs only on the flagged.")], 0, LINEAGE_Y, 12, 2),
 ]
 
 dashboard = {

@@ -44,7 +44,7 @@ def fit(
 
     ``x_*``: float32 (n, n_leads, n_samples); ``y_*``: int64 class index (n,)."""
     import torch
-    import torch.nn as nn
+    from torch import nn
 
     torch.manual_seed(seed)
     model = build_model().to(device)
@@ -123,8 +123,8 @@ def architecture_summary(model: Any, input_shape: tuple[int, ...]) -> tuple[str,
             hook.remove()
         model.train(was_training)
     total = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    lines = [f"**{type(model).__name__}**: {total:,} trainable parameters; input {shape(input_shape)} "
-             "= (batch, leads, samples).", "",
+    lines = [(f"**{type(model).__name__}**: {total:,} trainable parameters; input {shape(input_shape)} "
+              "= (batch, leads, samples)."), "",
              "| # | layer | module | output shape | parameters |", "|---|---|---|---|---|",
              f"| 0 | input | | {shape(input_shape)} | 0 |"]
     for i, (name, module, out_shape) in enumerate(layers, start=1):

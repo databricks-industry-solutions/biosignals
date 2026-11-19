@@ -8,6 +8,8 @@ abnormal ones, and an atrial fibrillation (AFib) model classifies the flagged on
 runs the whole model cycle on Databricks: generate training data, train, check the models on
 held-out data, promote, serve, score a daily batch, and monitor.
 
+**Maintainer:** May Merkle-Tan ([@hengrumay](https://github.com/hengrumay)).
+
 **Contributors:** May Merkle-Tan ([@hengrumay](https://github.com/hengrumay)). See
 [Contributing](../../README.md#contributing).
 
@@ -29,7 +31,9 @@ classes and the same cycle still applies.
 ## Quick start
 
 `catalog` and `warehouse_id` are required; every setting is in
-[Configuration](docs/deploy.md#configuration).
+[Configuration](docs/deploy.md#configuration). Give each deployment its own `schema`
+(`--var schema=<schema>`, default `biosignals`): the jobs stop rather than write into a schema
+another deployment owns ([One schema per deployment](docs/deploy.md#one-schema-per-deployment)).
 
 ```bash
 cd projects/ecg12-afib

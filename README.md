@@ -1,3 +1,7 @@
+[![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
+[![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
+[![Serverless](https://img.shields.io/badge/Serverless-Compute-00C851?style=for-the-badge)](https://docs.databricks.com/en/compute/serverless.html)
+
 # Biosignals - Databricks Solution Accelerator
 
 > **Not for clinical use as provided.** The code and models here are demonstrations, not medical
@@ -7,10 +11,6 @@
 A home for biosignal projects on Databricks: physiological time series such as the
 electrocardiogram (ECG), electroencephalogram (EEG), photoplethysmogram (PPG, the pulse signal
 from optical sensors), electromyogram (EMG) and wearable sensor streams.
-
-[![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
-[![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
-[![Serverless](https://img.shields.io/badge/Serverless-Compute-00C851?style=for-the-badge)](https://docs.databricks.com/en/compute/serverless.html)
 
 ## Projects
 

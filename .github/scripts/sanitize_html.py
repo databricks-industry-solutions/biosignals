@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """HTML allowlist for the Pages site (.github/workflows/publish.yaml, convert_notebooks.py).
 
 Every fragment rendered from repository content (Markdown, notebook cells, nbconvert output)

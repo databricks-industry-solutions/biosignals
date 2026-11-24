@@ -36,6 +36,61 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # test_setup_flow_local.py then fail when a notebook could write a value it does not allow.
 GOVERNED_TAG_VALUES = {"validation_status": frozenset({"valid", "invalid"})}
 
+# Every notebook's %pip install lines, exactly. Literal on purpose, every version included: a bump
+# changes it here too, after checking the new version against what the task's environment ships
+# (PREINSTALLED below; test_repo_consistency.py fails on a pin below it). The models' mlflow and
+# torch versions are config.MODEL_PIP_REQUIREMENTS's.
+_GENERATOR_PIP = '# MAGIC %pip install --no-deps "neurokit2==0.2.12" "PyWavelets==1.4.1"'
+_MLFLOW_PIP = '# MAGIC %pip install "mlflow-skinny==3.13.0"'
+_SCORING_PIP = '# MAGIC %pip install "mlflow-skinny==3.13.0" "torch==2.11.0"'
+PIP_LINES = {
+    "00_overview.py": [],
+    "01_generate_training_data.py": [_GENERATOR_PIP],
+    "02_train_arr_model.py": [],                       # AI v6 ships mlflow-skinny 3.13.0 and torch
+    "03_train_afib_model.py": [],
+    "04_validate_and_promote.py": [],
+    "05_serve_endpoints.py": [_GENERATOR_PIP, _MLFLOW_PIP],   # environment 6 ships mlflow-skinny 3.12.0
+    "06_generate_batch_data.py": [_GENERATOR_PIP],
+    "07_arr_triage.py": [_SCORING_PIP],                # environment 6: loads the models, ships no torch
+    "08_afib_classify.py": [_SCORING_PIP],
+}
+
+# What each job environment (its spec in resources/*.job.yml) ships of every package a %pip line
+# names, None when it ships none. From the Databricks release notes and the package lists they
+# link (checked 2026-11-23):
+#   AI v6: https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/six-gpu
+#          (requirements-ai-gpu-6.txt; torch is the CUDA 13 build, 2.11.0+cu130)
+#   6:     https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/six
+#          (requirements-env-6.txt; a SETUP run that downgraded it stopped with "Some core package
+#          versions have changed (databricks-sdk: 0.122.0 -> 0.102.0; protobuf: 6.33.5 -> 5.29.6)")
+PREINSTALLED = {
+    ("base_environment", "workspace-base-environments/databricks_ai_v6"): {
+        "mlflow-skinny": "3.13.0", "databricks-sdk": "0.122.0", "protobuf": "6.33.5", "torch": "2.11.0",
+        "neurokit2": None, "PyWavelets": None},
+    ("environment_version", "6"): {
+        "mlflow-skinny": "3.12.0", "databricks-sdk": "0.122.0", "protobuf": "6.33.5", "torch": None,
+        "neurokit2": None, "PyWavelets": None},
+}
+
+# What each mlflow-skinny version a %pip line installs requires of the packages an environment
+# ships (Requires-Dist in the wheel's METADATA on PyPI, checked 2026-11-23). An environment whose
+# versions fall outside these makes pip move them, the way an older pin would.
+MLFLOW_SKINNY_REQUIRES = {
+    "3.13.0": {"databricks-sdk": ">=0.20.0,<1", "protobuf": ">=3.12.0,<8"},
+}
+
+
+def pip_lines(path):
+    """A notebook's %pip install lines."""
+    return [line for line in path.read_text().splitlines() if line.startswith("# MAGIC %pip install")]
+
+
+def pip_pins(line):
+    """(package, version) for each package a %pip install line names."""
+    args = line.removeprefix("# MAGIC %pip install").split()
+    return [tuple(a.strip('"\'').split("==", 1)) for a in args if not a.startswith("-")]
+
+
 # The catalog the tests pass as the catalog_name parameter (the notebooks' widget has no default).
 TEST_CATALOG = "test_catalog"
 # The mlflow_experiment parameter as the bundle default resolves for a service principal (its user

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
-import os
-import re
-import markdown
 import glob
 import html
+import os
+import re
 
-from sanitize_html import clean   # same folder: the allowlist every rendered fragment goes through
+import markdown
+
+# Same folder: the allowlist every rendered fragment goes through.
+from sanitize_html import clean
 
 
 def parse_databricks_notebook(filepath):

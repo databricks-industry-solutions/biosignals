@@ -2,8 +2,6 @@
 
 [← ecg12-afib README](../README.md)
 
-## Dashboard
-
 `resources/ecg12_afib.dashboard.yml` deploys `dashboards/ecg12_afib.lvdash.json` with both targets.
 Its queries name bare tables; the bundle points them at your catalog and schema
 (`dataset_catalog` / `dataset_schema`) and runs them on your `warehouse_id`. Deploying publishes
@@ -34,15 +32,59 @@ narrowing `viewer_group` from `users` as well.
 job has run once (their tables do not exist before). The live tiles fail with `UNRESOLVED_COLUMN`
 until AI Gateway has delivered the first inference-table logs: AI Gateway creates each payload
 table with a placeholder schema (`databricks_request_id` only) when `05_` enables it, and adds the
-real columns with the first delivered batch of logs, best effort, typically within about an hour of
-the first app request. Nothing needs to be rebuilt or redeployed; the tiles work once the data is
-there.
+real columns with the first delivered batch of logs.
+
+The dashboard's live tiles fill in after the endpoints have had requests: Databricks writes the
+request logs to the inference tables with a delay, and the docs say to expect them within an hour of
+a request ([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)).
+Refresh the dashboard after that; until the first logs arrive the live tiles show an error, while the
+batch tiles work as soon as DAILY has run. Nothing needs to be rebuilt or redeployed.
+
+**Ask Genie needs a publish after the first DAILY run.** A published dashboard includes a Genie
+Agent, which answers questions in plain language (**Ask Genie**), and the docs say: "When you
+republish your dashboard with changes, the associated Genie Agent updates automatically to reflect
+the new datasets and visualizations." ([Genie Agents with dashboards](https://docs.databricks.com/aws/en/dashboards/genie-spaces)). `bundle deploy`
+publishes the dashboard before SETUP and DAILY have created its tables. What we saw in our tests on
+AWS and Azure:
+
+- Published before the DAILY job had created its tables, the dashboard's Ask Genie said "Genie is
+  unavailable due to incompatible SQL expressions in the dashboard". The dashboard's SQL uses none
+  of the expressions that page lists as incompatible.
+- Publishing the unchanged draft again, after DAILY had run, fixed it; `bundle plan` still showed the
+  dashboard unchanged afterwards.
+- Published after DAILY had run, with the request-log tables still holding only their placeholder
+  column, Ask Genie worked (it opened with suggested questions).
+
+So publish the dashboard once more after the DAILY job has run once. `./deploy.sh --run-daily` does
+it as its last step. Without `--run-daily`, or after a plain bundle deploy (target `no_app`), run
+DAILY, then:
+
+```bash
+databricks bundle summary -t <target> -p <profile> --var catalog=<catalog> --var warehouse_id=<warehouse-id> -o json | jq -r '.resources.dashboards.ecg12_afib_dashboard.id'
+databricks lakeview publish <dashboard-id> --warehouse-id <warehouse-id> --embed-credentials -p <profile>
+```
+
+`<target>` is `no_app` or `full`; the first command prints `<dashboard-id>` (without `jq`, run it
+without `-o json | jq ...`: the id is the part of the dashboard's URL after `/dashboardsv3/`). Leave
+out `--embed-credentials` if you deploy with `embed_credentials` set to `false`. In the workspace you
+can instead open the dashboard and "Click Publish in the upper-right corner of the dashboard"
+([Share a dashboard](https://docs.databricks.com/aws/en/dashboards/share/share)), keeping the same
+credentials setting.
+
+**Publish as the identity that deployed.** With embedded credentials, viewers' queries run as
+whoever published last: the CLI's `--embed-credentials` is the "Flag to indicate if the publisher's
+credentials should be embedded in the published dashboard", and "These embedded credentials will be
+used to execute the published dashboard's queries" ([publish API](https://docs.databricks.com/api/workspace/lakeview/publish)). The same goes for
+Publish in the workspace. So publish with the profile that deployed the bundle (`deploy.sh` uses its
+`-p` profile), or check which identity a profile uses first (`databricks current-user me -p
+<profile>`).
 
 To change the dashboard, edit `dashboards/build_ecg_demo_dashboard.py`, run
 `python dashboards/build_ecg_demo_dashboard.py` and commit the regenerated JSON (`--check` reports
 whether the committed file is current). A dashboard edited in the workspace UI differs from the
-file, and the next `bundle deploy` stops with "has been modified remotely" unless run with
-`--force`; `databricks bundle generate dashboard --resource ecg12_afib_dashboard --force` pulls the
+file, and the next `bundle deploy` of that deployment stops with "This dashboard has been
+modified remotely since the last bundle deployment." unless run with `--force`, which replaces the UI
+edits with the file; `databricks bundle generate dashboard --resource ecg12_afib_dashboard --force` pulls the
 UI version back into the file.
 
 The app reads the dashboard id from `ECG_DEMO_REACT_DASHBOARD_ID`, which the `full` target sets to

@@ -18,7 +18,7 @@
 # MAGIC |---|---|
 # MAGIC | `batch_date`, `batch_inference_datetime_utc` | run date (DATE) + acquisition time as `dd-MM-yyyy HH:mm:ss` text |
 # MAGIC | `pseudo_patient_id`, `rhythm_label` | synthetic id + ground-truth rhythm (0 NSR, 1 AFib, 2 Other) |
-# MAGIC | `ecg1`..`ecg12` | one ARRAY<FLOAT> per lead, mV, 2500 samples at 250 Hz, in the order I, II, III, aVR, aVL, aVF, V1..V6 |
+# MAGIC | `ecg1`..`ecg12` | one `ARRAY<FLOAT>` per lead, mV, 2500 samples at 250 Hz, in the order I, II, III, aVR, aVL, aVF, V1..V6 |
 # MAGIC | patient record | `mrn`, `age_years`, `sex`, `height_cm`, `weight_kg`, `bmi`, `bp_*_mmhg`, `acquisition_datetime_utc`, `heart_rate_bpm`, `sampling_rate_hz`, `n_leads`, `duration_s` |
 # MAGIC
 # MAGIC Re-running a date reproduces the same rows (everything is seeded by the date) and overwrites

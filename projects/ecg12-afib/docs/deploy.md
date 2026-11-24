@@ -5,7 +5,8 @@
 ## Configuration
 
 Bundle variables (`databricks.yml`). Pass them as `--var name=value` on every bundle command (or
-export `BUNDLE_VAR_<name>`); `bundle validate` refuses to run without the required ones.
+export `BUNDLE_VAR_<name>`), or set them once in a file (below); `bundle validate` refuses to run
+without the required ones.
 
 | Variable | Required | Default | Used for |
 |---|---|---|---|
@@ -23,6 +24,41 @@ The workspace itself comes from your Databricks CLI profile (`-p <profile>`); no
 is committed. Catalog and schema names go into SQL and model names unquoted, so the jobs and
 `deploy.sh` accept only letters, digits and underscores (Unity Catalog allows more, such as
 hyphens, but only inside backticks).
+
+### Variables in a file instead of `--var`
+
+For `databricks bundle` commands, `deploy.sh` and the workspace's Asset Bundle Editor, the values
+can live in a file the bundle reads on its own. Copy the template
+[`variable-overrides.example.json`](../variable-overrides.example.json) to
+`.databricks/bundle/<target>/variable-overrides.json` (`<target>` is `no_app` or `full`) and replace
+its placeholders:
+
+```bash
+cd projects/ecg12-afib
+mkdir -p .databricks/bundle/no_app
+cp variable-overrides.example.json .databricks/bundle/no_app/variable-overrides.json
+# edit the copy: "<catalog>" and "<warehouse-id>" become your values
+databricks bundle validate --strict -t no_app -p <profile>
+```
+
+- **One file per target.** The bundle reads the file only for the target whose folder it is in.
+- **Precedence.** A value passed with `--var`, or as `BUNDLE_VAR_<name>`, wins over the file; the
+  file wins over a target's `variables` in `databricks.yml` and over the defaults
+  ([bundle variables](https://docs.databricks.com/aws/en/dev-tools/bundles/variables), Precedence
+  order). The docs advise using the same approach for `bundle deploy` and `bundle run`.
+- **Required variables only.** The template holds `catalog` and `warehouse_id`, the two without a
+  default. To change another one, add it as a key with your value, for example
+  `"schema": "<your_schema>", "endpoint_prefix": "<your_prefix>"` for a deployment of your own next
+  to another one (and `"app_name"` for the `full` target). The defaults stay in `databricks.yml`
+  only (the table above), so leave out any variable you don't change.
+- **Values only, never the workspace or a secret.** The workspace comes from `-p <profile>`; no
+  host, profile, token or password belongs in the file. `.databricks/` is in the repository's
+  `.gitignore`, so the copy never ends up in a commit.
+- **`deploy.sh` reads the same file** (in `.databricks/bundle/full/`), and its flags (`--catalog`,
+  `--schema`, `--endpoint-prefix`, `--app-name`, ...) win over it, as `--var` does. With the file
+  in place, `./deploy.sh -p <profile>` needs no other flag. The script reads every value it uses
+  back from the bundle's own resolution (`bundle validate`), so its checks and lookups (the
+  endpoint names, the app name, the catalog and schema) always match what the bundle deploys.
 
 ### Expiry tag (`removeAfter`)
 
@@ -139,7 +175,8 @@ Two targets, which are **separate deployments** (each has its own folder and sta
 Pick one per workspace; to switch in the same schema, remove the first completely
 ([Teardown](#teardown), including `ecg12_afib_deployment`), or give the second its own `schema`.
 Both use `mode: development` (job and dashboard names get a `[dev <user>]` prefix, schedules
-deploy paused; the app name is not prefixed).
+deploy paused; the app name is not prefixed). The `no_app` dashboard's name also ends in
+`[no_app]`, so the two targets' dashboards can be told apart in the workspace.
 
 **What the deploying identity needs:** `USE CATALOG` and `CREATE SCHEMA` on the catalog (or, if the
 schema exists, `USE SCHEMA`, `CREATE TABLE` and `CREATE MODEL` on it); serverless jobs, including
@@ -150,31 +187,50 @@ serverless GPU; permission to create Model Serving endpoints; `CAN_USE` on the w
 
 1. Clone this repository into the workspace as a Git folder.
 2. Set the required variables without editing the committed `databricks.yml`: in the Git folder,
-   create the file `projects/ecg12-afib/.databricks/bundle/no_app/variable-overrides.json` with
+   create the file `projects/ecg12-afib/.databricks/bundle/no_app/variable-overrides.json` with the
+   content of the template `projects/ecg12-afib/variable-overrides.example.json`,
    ```json
    {"catalog": "<catalog>", "warehouse_id": "<warehouse-id>"}
    ```
-   (add `"schema": "<schema>"` for a schema of this deployment's own, and any other variable from
-   the table above). The bundle reads this file for the `no_app` target, after `--var` and
-   `BUNDLE_VAR_<name>` and before the defaults ([bundle variables](https://docs.databricks.com/aws/en/dev-tools/bundles/variables)).
+   with your values in place of the placeholders (add `"schema": "<your_schema>"` for a schema of
+   this deployment's own, and any other variable from the table above; see
+   [Variables in a file instead of `--var`](#variables-in-a-file-instead-of---var)). The bundle reads
+   this file for the `no_app` target, after `--var` and `BUNDLE_VAR_<name>` and before the target
+   settings in `databricks.yml` and the defaults ([bundle variables](https://docs.databricks.com/aws/en/dev-tools/bundles/variables)).
    `.databricks/` is in the repository's `.gitignore`, so the file never ends up in a commit. If
    the bundle editor still reports a required variable without a value, set the values under
    `targets.no_app.variables` in your Git folder's copy of `databricks.yml` instead, and do not
    commit that change.
 3. Open `projects/ecg12-afib/databricks.yml` in the bundle editor and deploy (target `no_app`, the
    default). Then run `ecg12_afib_setup`, then `ecg12_afib_daily` from the Deployments tab.
+4. Open the dashboard and publish it once more (**Publish**, upper right), so its Ask Genie works.
+   Publish as the person who deployed: viewers' queries run with the publisher's credentials
+   ([Dashboard](dashboard.md), Ask Genie).
 
 The same from a laptop:
 
 ```bash
 cd projects/ecg12-afib
 databricks bundle validate --strict -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
+databricks bundle plan -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
 databricks bundle deploy -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
 databricks bundle run ecg12_afib_setup -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
 databricks bundle run ecg12_afib_daily -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
+databricks bundle summary -p <profile> --var catalog=<catalog> --var warehouse_id=<id> -o json | jq -r '.resources.dashboards.ecg12_afib_dashboard.id'
+databricks lakeview publish <dashboard-id> --warehouse-id <id> --embed-credentials -p <profile>
 ```
 
-(add `--var schema=<schema>` to every command for a schema other than `biosignals`).
+(add `--var schema=<schema>` to every `bundle` command for a schema other than `biosignals`). The
+last two publish the dashboard again after DAILY, so its Ask Genie works: the first prints
+`<dashboard-id>` (without `jq`: the part of the dashboard's URL after `/dashboardsv3/` in the plain
+summary). Publish with the same profile you deployed with: viewers' queries run with the publisher's
+credentials ([Dashboard](dashboard.md), Ask Genie); leave out `--embed-credentials` if you set
+`embed_credentials` to `false`. `plan` shows what `deploy` will add, change or delete without changing anything. A folder
+deployed to another workspace before keeps that workspace's deployment state in
+`.databricks/bundle/<target>/`: `plan` can then stop with `lineage mismatch in state files`, or
+`deploy` with `Unable to find dashboard [...]`.
+Use a fresh clone for each workspace, or delete that folder (move out a `variable-overrides.json`
+first if you keep one there).
 
 No app is deployed on this path; the dashboard and the serving endpoints still are.
 
@@ -192,12 +248,21 @@ cd projects/ecg12-afib
 
 `deploy.sh` stops with an error at the first step that fails:
 
-1. checks the prerequisites, the required arguments (catalog and schema names included), that
-   the profile authenticates and, unless `--skip-embed-allowlist`, that it can read the
-   dashboard-embedding settings step 8 changes (a workspace admin setting), so a caller who cannot
-   learns it before anything is built or deployed;
+1. checks the prerequisites, that the profile authenticates and, unless `--skip-embed-allowlist`,
+   that it can read the dashboard-embedding settings step 8 changes (a workspace admin setting), so
+   a caller who cannot learns it before anything is built or deployed;
 2. builds the app (`app/build_from_lockfiles.sh`, see [`app/README.md`](../app/README.md));
-3. `databricks bundle validate --strict -t full`;
+3. `databricks bundle validate --strict -t full`, which resolves every variable (the flags, then
+   `BUNDLE_VAR_<name>`, then `.databricks/bundle/full/variable-overrides.json`, then the defaults)
+   and fails when `catalog` or `warehouse_id` has no value. It runs after the build: for the `full`
+   target, validate and plan stop with `stat app/.build: no such file or directory` until the build
+   has written it. The script reads the values it uses
+   from that result and checks them (catalog and schema: letters, digits and underscores; the
+   endpoint prefix, the MLflow experiment, `embed_credentials`, `remove_after`) before anything is
+   deployed. Then `databricks bundle plan -t full`, which prints what the deploy will add, change
+   or delete; if `plan` fails (for example `lineage mismatch in state files`, when this folder was
+   deployed to another workspace before), the script stops here with a hint to use a fresh clone
+   or delete `.databricks/bundle/full/`;
 4. `databricks bundle deploy -t full`: the jobs, the dashboard and the app, with `viewer_group`
    granted `CAN_READ` on the dashboard and `CAN_USE` on the app;
 5. runs the SETUP job and waits for it (`--run-daily` then also runs the DAILY job once);
@@ -212,7 +277,12 @@ cd projects/ecg12-afib
    their entry; the script then reads again and retries, and finally checks the domain is there.
    **Caveat:** a setting that has never been written has no etag, so two first-ever writes at the
    same moment can still overwrite each other (the later one wins); if the dashboard does not show
-   in the app, an admin adds the domain by hand (Settings > Security > Embed dashboards).
+   in the app, an admin adds the domain by hand (Settings > Security > Embed dashboards);
+9. with `--run-daily`, publishes the dashboard once more (`databricks lakeview publish`, with the
+   dashboard id from `bundle summary` and the resolved `warehouse_id` and `embed_credentials`), so
+   its Ask Genie sees the tables SETUP and DAILY created ([Dashboard](dashboard.md), Ask Genie).
+   Without `--run-daily` it prints that command to run once DAILY has run. A failed publish only
+   warns, with the command to run by hand.
 
 Other options: `--schema`, `--endpoint-prefix`, `--mlflow-experiment`, `--app-name`, `--viewer-group`,
 `--embed-credentials`, `--remove-after` (the bundle variables above). Re-running is safe: every

@@ -22,7 +22,7 @@
 # MAGIC (`batch_data_12l_<date>`, `arr_triaged_12l_<date>`) or an accumulating results table.
 # MAGIC
 # MAGIC Columns: `sample_id`, `split`, `rhythm_label` (0 NSR, 1 AFib, 2 Other), `rhythm_name`,
-# MAGIC `heart_rate_bpm`, and `ecg1`..`ecg12` (one ARRAY<FLOAT> per lead, mV, 2500 samples at 250 Hz, in
+# MAGIC `heart_rate_bpm`, and `ecg1`..`ecg12` (one `ARRAY<FLOAT>` per lead, mV, 2500 samples at 250 Hz, in
 # MAGIC the order I, II, III, aVR, aVL, aVF, V1..V6), the same per-lead layout as the daily batch.
 # MAGIC
 # MAGIC **One schema per deployment.** As the first task of the SETUP job it creates the schema when it
@@ -32,7 +32,7 @@
 # MAGIC other's training data and `champion`: when the schema already belongs to another deployment, this
 # MAGIC task stops with a message asking for another schema, and the rest of the job never runs.
 # MAGIC
-# MAGIC **Compute:** standard serverless. Parameters: `catalog_name` (required: the SETUP job passes the
+# MAGIC **Compute:** standard serverless, environment 6 (the SETUP job names it). Parameters: `catalog_name` (required: the SETUP job passes the
 # MAGIC bundle's `catalog` variable), `schema_name` (default `biosignals`), `deployment_id` (required: the
 # MAGIC job passes `<workspace id>:<bundle root path>`).
 

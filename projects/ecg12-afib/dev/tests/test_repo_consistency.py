@@ -4,6 +4,7 @@ in config, no workspace-specific values in any committed file, and the generated
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tokenize
@@ -11,7 +12,9 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import DEMO_ROOT, SP_EXPERIMENT
+from conftest import DEMO_ROOT, MLFLOW_SKINNY_REQUIRES, PIP_LINES, PREINSTALLED, SP_EXPERIMENT, pip_lines, pip_pins
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 from common import config
 
@@ -101,6 +104,23 @@ def test_bundle_variables_have_no_workspace_defaults():
     assert "workspace" not in bundle
 
 
+def test_variable_overrides_template_holds_placeholders_for_the_required_variables():
+    """variable-overrides.example.json (copied to .databricks/bundle/<target>/variable-overrides.json)
+    names bundle variables only, has every required one, and holds only <...> placeholders, so no
+    workspace value can be committed in it. It lists no variable with a default: the defaults stay
+    in databricks.yml only (docs/deploy.md, Configuration, shows how to add one)."""
+    path = DEMO_ROOT / "variable-overrides.example.json"
+    template = json.loads(path.read_text())
+    variables = _bundle()["variables"]
+    required = {name for name, variable in variables.items() if "default" not in variable}
+    assert required == {"catalog", "warehouse_id"}
+    assert set(template) <= set(variables), set(template) - set(variables)
+    assert required <= set(template) and not {name for name in template if "default" in variables[name]}
+    assert all(isinstance(value, str) and re.fullmatch(r"<[a-z][a-z_-]*>", value) for value in template.values()), template
+    assert path in _project_files()                    # the leak check below reads it too
+    assert ".databricks/" in (DEMO_ROOT.parent.parent / ".gitignore").read_text().splitlines()   # the copy is never committed
+
+
 def test_no_app_target_needs_no_local_build_and_full_adds_the_app():
     """no_app (default): jobs + dashboard only, deployable from the workspace UI (no artifact build,
     no app). full: the app with its locally built source, artifact build and environment."""
@@ -109,8 +129,14 @@ def test_no_app_target_needs_no_local_build_and_full_adds_the_app():
     assert set(targets) == {"no_app", "full"}
     assert targets["no_app"].get("default") is True and "default" not in targets["full"]
     assert "artifacts" not in bundle and "apps" not in (bundle.get("resources") or {})
-    assert not {"artifacts", "resources"} & set(targets["no_app"])
+    assert "artifacts" not in targets["no_app"]
     assert "app/**" in targets["no_app"]["sync"]["exclude"]
+    # no_app renames its dashboard (and changes nothing else) so the two deployments' dashboards differ.
+    dashboard = yaml.safe_load((DEMO_ROOT / "resources" / "ecg12_afib.dashboard.yml").read_text())
+    base_name = dashboard["resources"]["dashboards"]["ecg12_afib_dashboard"]["display_name"]
+    assert targets["no_app"]["resources"] == {
+        "dashboards": {"ecg12_afib_dashboard": {"display_name": f"{base_name} [no_app]"}}}
+    assert "dashboards" not in targets["full"]["resources"]
     for path in sorted((DEMO_ROOT / "resources").glob("*.yml")):        # no included file adds an app
         assert "apps" not in (yaml.safe_load(path.read_text()).get("resources") or {}), path.name
 
@@ -176,8 +202,11 @@ def test_app_bounds_every_endpoint_call_and_tags_its_warmup_pings():
     assert "const UI_MARGIN_S = 10;" in ui and "2 * (cfg.serving_timeout_s + UI_MARGIN_S)" in ui
     for text in ("Cancel</Button>", "Retry</Button>", "New reading", "Reading…", "Each ECG is read in and scored live",
                  "Synthetic, non-PII", 'document.addEventListener("visibilitychange"', "c.daily_job_id",
-                 "<strong>Not for clinical use.</strong>", "{analysis.notice}", "retryAfterS(err)"):
+                 "<strong>Not for clinical use.</strong>", "{analysis.notice}", "retryAfterS(err)",
+                 "<Ext href={SOURCE_REPO_URL}", 'title="Source code on GitHub"'):
         assert text in ui, text
+    assert ui.count("const SOURCE_REPO_URL =") == 1                         # one constant, not app config
+    assert re.search(r'ECG/AFib<sup aria-hidden="true"[^>]*>↗</sup>', ui)   # screen readers skip the arrow
     api = (DEMO_ROOT / "app" / "src" / "ecg_demo_react" / "ui" / "lib" / "api.ts").read_text()
     for generated in ("export const warmup = async", "daily_job_id: string | null;", "serving_timeout_s: number;",
                       "export interface ServingError {", "export interface RateLimited {", "notice?: string;"):
@@ -192,24 +221,266 @@ def test_deploy_script_is_valid_bash_and_reads_endpoint_names_from_config():
     assert '--var "endpoint_prefix=$ENDPOINT_PREFIX"' in script
     assert not set(config.endpoint_names()) & set(re.findall(r"\w+", script))   # (the help text shows the default prefix)
     # --skip-embed-allowlist makes no settings call: the skip branch comes before the first one.
-    step8 = script[script.index('step "8/8'):]
+    step8 = script[script.index('step "8/9'):]
     assert step8.index("SKIP_ALLOWLIST -eq 1") < step8.index("databricks settings")
     # Step 1 reads the embedding settings (unless skipped), so a caller who cannot stops before
     # anything is built or deployed; step 8 writes back with the etag it read (optimistic concurrency).
-    step1 = script[:script.index('step "2/8')]
+    step1 = script[:script.index('step "2/9')]
     assert step1.index("SKIP_ALLOWLIST -eq 0") < step1.index("aibi-dashboard-embedding-access-policy get")
     assert step1.index("SKIP_ALLOWLIST -eq 0") < step1.index("read_approved_domains >/dev/null")
     assert "--arg etag" in step8 and "{etag: $etag}" in step8 and "attempt" in step8
-    # Catalog and schema are checked with the notebooks' own check, before anything is deployed.
-    assert "config.uc_location(sys.argv[1], sys.argv[2])" in step1 and '"$CATALOG" "$SCHEMA"' in step1
     assert '--var "embed_credentials=$EMBED_CREDENTIALS"' in script
-    # The MLflow experiment, when given, gets the notebooks' own check before anything is deployed.
     assert '--var "mlflow_experiment=$MLFLOW_EXPERIMENT"' in script
-    assert "config.resolve_mlflow_experiment(sys.argv[1])" in step1 and '"$MLFLOW_EXPERIMENT"' in step1
-    for step in ("bundle validate --strict", "bundle deploy", "bundle run ecg12_afib_setup",
+    for step in ("bundle validate --strict", "bundle plan", "bundle deploy", "bundle run ecg12_afib_setup",
                  "serving-endpoints update-permissions", "CAN_QUERY", "bundle run ecg12_afib_app",
                  "aibi-dashboard-embedding-approved-domains"):
         assert step in script, step
+    # Step 3: validate (its resolved configuration), then every value the script uses read from it
+    # and checked with the notebooks' own checks, then the plan, all with the same arguments and
+    # before the deploy. A failed validate or plan prints its hint, then the step's ERR summary.
+    step3 = script[script.index('step "3/9'):script.index('step "4/9')]
+    validate = step3.index('resolved=$(databricks bundle validate --strict -o json "${BUNDLE[@]}")')
+    reads = [step3.index(f"{name}=$(resolved_var {var})") for name, var in RESOLVED_VARS.items()]
+    checks = [step3.index(check) for check in ("config.endpoint_names(sys.argv[1])", "config.uc_location(sys.argv[1], sys.argv[2])",
+                                               "config.resolve_mlflow_experiment(sys.argv[1])")]
+    plan = step3.index('databricks bundle plan "${BUNDLE[@]}"')
+    assert validate < min(reads) and max(reads) < min(checks) and max(checks) < plan
+    assert '"$CATALOG" "$SCHEMA"' in step3 and '"$MLFLOW_EXPERIMENT" 2>&1' in step3
+    assert step3.index("|| hint", plan) < step3.index(PLAN_HINT, plan)
+    assert "hint() { echo \"ERROR: $*\" >&2; return 1; }" in step3         # no exit: the ERR trap reports the step
+    # Each check and lookup runs once, on the resolved values: none before step 3, where only the
+    # flags exist (a value from BUNDLE_VAR_<name> or the overrides file would be missed).
+    for check in ("config.endpoint_names(", "config.uc_location(", "config.resolve_mlflow_experiment("):
+        assert script.count(check) == 1 and check in step3, check
+    assert script.index('step "4/9') < script.index('apps get "$APP_NAME"')
+
+
+# The values deploy.sh reads back from `bundle validate -o json` (shell variable -> bundle variable).
+RESOLVED_VARS = {"CATALOG": "catalog", "SCHEMA": "schema", "WAREHOUSE_ID": "warehouse_id", "ENDPOINT_PREFIX": "endpoint_prefix",
+                 "MLFLOW_EXPERIMENT": "mlflow_experiment", "APP_NAME": "app_name",
+                 "EMBED_CREDENTIALS": "embed_credentials", "REMOVE_AFTER": "remove_after"}
+# Printed by deploy.sh when `databricks bundle plan` fails (for example "lineage mismatch in state
+# files": the folder's deployment state belongs to another workspace).
+PLAN_HINT = ("If you deployed this folder to another workspace before, use a fresh clone or delete "
+             ".databricks/bundle/full/")
+# A stand-in for the Databricks CLI, so deploy.sh runs end to end without a workspace. It logs every
+# call, and resolves the bundle variables as the CLI does: --var, then BUNDLE_VAR_<name>, then the
+# variable-overrides file (FAKE_OVERRIDES, the file's JSON), then databricks.yml's defaults
+# (FAKE_DEFAULTS); `bundle validate` fails on a required variable with no value, and writes
+# FAKE_VALIDATE_WARNING to stderr when set. `bundle plan` fails when PLAN_FAILS=1; `apps get` /
+# `serving-endpoints get` answer for any name; `bundle summary` names the deployed dashboard
+# FAKE_DASHBOARD_ID (none when it is empty) and fails when SUMMARY_FAILS=1; `lakeview publish`
+# fails when PUBLISH_FAILS=1.
+STUB_DATABRICKS = r"""#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["DATABRICKS_LOG"], "a") as log:
+    log.write(" ".join(args) + "\n")
+def out(value):
+    print(json.dumps(value))
+if args == ["--version"]:
+    print("Databricks CLI v0.281.0")
+elif args[:2] == ["current-user", "me"]:
+    out({"userName": "someone@example.org"})
+elif args[:2] == ["bundle", "validate"]:
+    if os.environ.get("FAKE_VALIDATE_WARNING"):
+        print(os.environ["FAKE_VALIDATE_WARNING"], file=sys.stderr)
+    values = {k: v for k, v in json.loads(os.environ["FAKE_DEFAULTS"]).items() if v is not None}
+    values.update(json.loads(os.environ.get("FAKE_OVERRIDES") or "{}"))
+    values.update({k[len("BUNDLE_VAR_"):]: v for k, v in os.environ.items() if k.startswith("BUNDLE_VAR_")})
+    values.update(dict(a.split("=", 1) for a, flag in zip(args[1:], args) if flag == "--var"))
+    for name in json.loads(os.environ["FAKE_DEFAULTS"]):
+        if name not in values:
+            sys.exit(f"Error: no value assigned to required variable {name}.")
+    values = {k: v.replace("${workspace.current_user.userName}", "someone@example.org") if isinstance(v, str) else v
+              for k, v in values.items()}
+    out({"variables": {k: {"value": v} for k, v in values.items()}}) if "json" in args else print("Validation OK!")
+elif args[:2] == ["bundle", "plan"]:
+    if os.environ.get("PLAN_FAILS") == "1":
+        sys.exit("Error: lineage mismatch in state files")
+    print("Plan: 0 to add, 0 to change, 0 to delete, 4 unchanged")
+elif args[:2] in (["bundle", "deploy"], ["bundle", "run"]) or args[:2] == ["serving-endpoints", "update-permissions"]:
+    pass
+elif args[:2] == ["bundle", "summary"]:
+    if os.environ.get("SUMMARY_FAILS") == "1":
+        sys.exit("Error: failed to load the deployment state")
+    dashboard_id = os.environ.get("FAKE_DASHBOARD_ID", "dash-1")
+    out({"resources": {"dashboards": {"ecg12_afib_dashboard": {"id": dashboard_id} if dashboard_id else {}}}})
+elif args[:2] == ["lakeview", "publish"]:
+    if os.environ.get("PUBLISH_FAILS") == "1":
+        sys.exit("Error: PERMISSION_DENIED: cannot publish")
+    out({"display_name": "dashboard"})
+elif args[:2] == ["apps", "get"]:
+    out({"service_principal_client_id": "sp-1", "url": f"https://{args[2]}.example.org"})
+elif args[:2] == ["serving-endpoints", "get"]:
+    out({"id": f"id-{args[2]}"})
+else:
+    sys.exit(f"stand-in: unexpected call: {' '.join(args)}")
+"""
+STUB_APX = '#!/usr/bin/env bash\n[[ "$1" == bun ]] && echo 1.0.0 || echo "apx 0.3.8"\n'
+STUB_UV = '#!/usr/bin/env bash\necho "uv 0.0.0"\n'
+
+
+def _run_deploy_script(tmp_path, *flags, overrides=None, plan_fails=False, env=None):
+    """deploy.sh on a copy of itself and common/, with stand-ins for the CLI, apx, uv and the app
+    build; --skip-embed-allowlist, so it makes no settings call. `env` adds environment variables
+    (BUNDLE_VAR_<name>, FAKE_VALIDATE_WARNING). Returns (result, CLI calls)."""
+    root, bin_dir = tmp_path / "project", tmp_path / "bin"
+    shutil.copytree(DEMO_ROOT / "common", root / "common", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(DEMO_ROOT / "deploy.sh", root / "deploy.sh")
+    for path, text in ((bin_dir / "databricks", STUB_DATABRICKS), (bin_dir / "apx", STUB_APX),
+                       (bin_dir / "uv", STUB_UV), (root / "app" / "build_from_lockfiles.sh", "#!/usr/bin/env bash\n")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(0o755)
+    log = tmp_path / "databricks.log"
+    log.write_text("")
+    defaults = {name: variable.get("default") for name, variable in _bundle()["variables"].items()}
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin:{Path(shutil.which('jq')).parent}:{Path(sys.executable).parent}",
+           "HOME": str(tmp_path), "DATABRICKS_LOG": str(log), "PLAN_FAILS": "1" if plan_fails else "0",
+           "FAKE_DEFAULTS": json.dumps(defaults), "FAKE_OVERRIDES": json.dumps(overrides or {}), **(env or {})}
+    result = subprocess.run(["bash", str(root / "deploy.sh"), "-p", "prof", "--skip-embed-allowlist", *flags],
+                            capture_output=True, text=True, env=env, timeout=60, check=False)
+    return result, log.read_text().splitlines()
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+@pytest.mark.parametrize("plan_fails", [True, False])
+def test_deploy_script_stops_on_a_failed_plan(tmp_path, plan_fails):
+    """deploy.sh runs `bundle plan` with the validate / deploy arguments right after validate: a failed
+    plan prints the hint, then the step's usual "failed during" summary, and never deploys; a plan
+    that passes goes on to the deploy and the rest of the install."""
+    result, calls = _run_deploy_script(tmp_path, "--catalog", "cat", "--warehouse-id", "wh", plan_fails=plan_fails)
+    args = "-t full -p prof --var catalog=cat --var warehouse_id=wh"
+    assert calls.index(f"bundle validate --strict -o json {args}") + 1 == calls.index(f"bundle plan {args}"), result.stderr
+    if plan_fails:
+        assert result.returncode == 1
+        assert "lineage mismatch in state files" in result.stderr
+        assert "ERROR: databricks bundle plan failed" in result.stderr and PLAN_HINT in result.stderr
+        assert "ERROR: deploy.sh failed during: 3/9 bundle validate and plan" in result.stderr
+        assert result.stderr.index(PLAN_HINT) < result.stderr.index("deploy.sh failed during")
+        assert not [c for c in calls if c.startswith("bundle deploy")]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "Plan: 0 to add" in result.stdout and PLAN_HINT not in result.stderr
+        assert calls.index(f"bundle plan {args}") + 1 == calls.index(f"bundle deploy {args}")
+        assert "Done. App: https://ecg12-demo.example.org" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+def test_deploy_script_uses_the_bundles_resolved_values(tmp_path):
+    """A value only in .databricks/bundle/full/variable-overrides.json is the one the script's own
+    checks and lookups use (the app it reads, the endpoints it grants), as for the bundle; a
+    BUNDLE_VAR_<name> wins over the file, and a flag (passed as --var) over both."""
+    overrides = {"catalog": "file_cat", "warehouse_id": "file_wh", "app_name": "file-app", "endpoint_prefix": "file_pfx"}
+    result, calls = _run_deploy_script(tmp_path / "file", overrides=overrides)
+    assert result.returncode == 0, result.stderr
+    assert "bundle validate --strict -o json -t full -p prof" in calls           # no --var: all from the file
+    assert "apps get file-app -p prof -o json" in calls and "Done. App: https://file-app.example.org" in result.stdout
+    assert {"serving-endpoints get file_pfx_arr -p prof -o json", "serving-endpoints get file_pfx_afib -p prof -o json"} <= set(calls)
+    assert "catalog.schema: file_cat.biosignals" in result.stdout
+
+    result, calls = _run_deploy_script(tmp_path / "flags", "--app-name", "flag-app", "--endpoint-prefix", "flag_pfx",
+                                       overrides=overrides)
+    assert result.returncode == 0, result.stderr
+    assert "apps get flag-app -p prof -o json" in calls and not [c for c in calls if "file-app" in c]
+    assert "serving-endpoints get flag_pfx_arr -p prof -o json" in calls and not [c for c in calls if "file_pfx" in c]
+
+    result, calls = _run_deploy_script(tmp_path / "env", overrides=overrides, env={"BUNDLE_VAR_app_name": "env-app"})
+    assert result.returncode == 0, result.stderr
+    assert "apps get env-app -p prof -o json" in calls and not [c for c in calls if "file-app" in c]
+    assert "serving-endpoints get file_pfx_arr -p prof -o json" in calls          # no BUNDLE_VAR: still the file's
+
+    result, calls = _run_deploy_script(tmp_path / "env-and-flag", "--app-name", "flag-app", overrides=overrides,
+                                       env={"BUNDLE_VAR_app_name": "env-app"})
+    assert result.returncode == 0, result.stderr
+    assert "apps get flag-app -p prof -o json" in calls and not [c for c in calls if "env-app" in c]
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+def test_deploy_script_keeps_a_validate_warning_visible_and_out_of_the_values(tmp_path):
+    """A warning `bundle validate` writes to stderr reaches the terminal, and the values the script
+    reads come from the JSON on stdout, unaffected by it."""
+    warning = "Warning: a made-up validate warning on stderr"
+    result, calls = _run_deploy_script(tmp_path, "--catalog", "cat", "--warehouse-id", "wh", "--app-name", "warned-app",
+                                       env={"FAKE_VALIDATE_WARNING": warning})
+    assert result.returncode == 0, result.stderr
+    assert warning in result.stderr and warning not in result.stdout
+    assert "catalog.schema: cat.biosignals; app: warned-app" in result.stdout
+    assert "apps get warned-app -p prof -o json" in calls
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+@pytest.mark.parametrize("embed", [True, False], ids=["embed-credentials", "viewer-credentials"])
+def test_deploy_script_republishes_the_dashboard_after_daily(tmp_path, embed):
+    """With --run-daily, the last step republishes the bundle's dashboard once, after the DAILY run
+    and after the app's steps, so its Ask Genie sees the tables SETUP and DAILY created: the id from
+    `bundle summary`, the resolved warehouse (here only in the overrides file) and --embed-credentials
+    exactly when embed_credentials is true."""
+    overrides = {"catalog": "cat", "warehouse_id": "file_wh", "embed_credentials": embed}
+    result, calls = _run_deploy_script(tmp_path, "--run-daily", overrides=overrides, env={"FAKE_DASHBOARD_ID": "dash-9"})
+    assert result.returncode == 0, result.stderr
+    publishes = [c for c in calls if c.startswith("lakeview publish")]
+    expected = "lakeview publish dash-9 --warehouse-id file_wh" + (" --embed-credentials" if embed else "") + " -p prof"
+    assert publishes == [expected], publishes
+    daily = calls.index("bundle run ecg12_afib_daily -t full -p prof")
+    assert daily < calls.index("bundle summary -o json -t full -p prof") < calls.index(expected)
+    assert calls.index("apps get ecg12-demo -p prof -o json") < calls.index(expected)
+    assert "republished dashboard dash-9, so its Ask Genie sees the tables SETUP and DAILY created" in result.stdout
+    assert "republish once" not in result.stdout          # nothing to repeat after it
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+def test_deploy_script_republish_failure_only_warns(tmp_path):
+    """A failed republish warns with the command to run by hand and the script still finishes."""
+    result, calls = _run_deploy_script(tmp_path, "--catalog", "cat", "--warehouse-id", "wh", "--run-daily",
+                                       env={"PUBLISH_FAILS": "1", "FAKE_DASHBOARD_ID": "dash-9"})
+    assert result.returncode == 0, result.stderr
+    assert len([c for c in calls if c.startswith("lakeview publish")]) == 1
+    assert "PERMISSION_DENIED: cannot publish" in result.stderr
+    assert "WARNING: republishing the dashboard failed" in result.stderr
+    assert "  databricks lakeview publish dash-9 --warehouse-id wh --embed-credentials -p prof" in result.stderr
+    assert "deploy.sh failed during" not in result.stderr and "Done. App: " in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+@pytest.mark.parametrize("env", [{"SUMMARY_FAILS": "1"}, {"FAKE_DASHBOARD_ID": ""}], ids=["summary-fails", "no-dashboard-id"])
+def test_deploy_script_without_a_dashboard_id_warns_with_the_manual_command(tmp_path, env):
+    """`bundle summary` failing, or naming no dashboard id: no publish call, a warning with the manual
+    command (a placeholder id and how to get it), and the script still finishes."""
+    result, calls = _run_deploy_script(tmp_path, "--catalog", "cat", "--warehouse-id", "wh", "--run-daily", env=env)
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in calls if c.startswith("lakeview publish")]
+    assert "WARNING: could not read the dashboard's id from the bundle, so it was not republished" in result.stderr
+    assert "  databricks lakeview publish <dashboard-id> --warehouse-id wh --embed-credentials -p prof" in result.stderr
+    assert "(<dashboard-id>: databricks bundle summary -t full -p prof -o json | jq -r '.resources.dashboards." in result.stderr
+    assert "deploy.sh failed during" not in result.stderr and "Done. App: " in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+def test_deploy_script_without_daily_prints_the_republish_command(tmp_path):
+    """Without --run-daily the DAILY job's tables may not exist yet: no publish call, and the command
+    to run once DAILY has run is printed."""
+    result, calls = _run_deploy_script(tmp_path, "--catalog", "cat", "--warehouse-id", "wh",
+                                       env={"FAKE_DASHBOARD_ID": "dash-9"})
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in calls if c.startswith("lakeview publish")]
+    assert "Once DAILY has run (now, if it ran before), republish once so Ask Genie works:" in result.stdout
+    assert "  databricks lakeview publish dash-9 --warehouse-id wh --embed-credentials -p prof" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="deploy.sh needs jq")
+def test_deploy_script_checks_the_resolved_values_before_deploying(tmp_path):
+    """No catalog anywhere: validate fails, with the hint and the step's summary. A schema from the
+    overrides file that the jobs would refuse stops the script before the plan and the deploy."""
+    result, calls = _run_deploy_script(tmp_path / "none", "--warehouse-id", "wh")
+    assert result.returncode == 1
+    assert "no value assigned to required variable catalog" in result.stderr
+    assert "--catalog / --warehouse-id, BUNDLE_VAR_catalog" in result.stderr
+    assert "ERROR: deploy.sh failed during: 3/9 bundle validate and plan" in result.stderr
+    result, calls = _run_deploy_script(tmp_path / "bad", overrides={"catalog": "c", "warehouse_id": "w", "schema": "my-schema"})
+    assert result.returncode == 1 and "invalid catalog / schema" in result.stderr, result.stderr
+    assert not [c for c in calls if c.startswith(("bundle plan", "bundle deploy"))]
 
 
 def test_remove_after_tags_the_jobs_with_no_date_committed():
@@ -234,7 +505,7 @@ def test_remove_after_tags_the_jobs_with_no_date_committed():
     # Read from the parameter, and only there: a hard-coded value can't silently disable the tagging.
     assert re.findall(r"^remove_after\s*=.*$", serve, re.MULTILINE) == ['remove_after = dbutils.widgets.get("remove_after").strip()']
     check = 'if remove_after and not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", remove_after):'
-    assert check in serve and serve.index(check) < serve.index("full, ver = deploy(model_name, endpoint_name, existing)")
+    assert check in serve and serve.index(check) < serve.index("deployed[endpoint_name] = deploy(model_name, endpoint_name, existing)")
     tag = 'w.serving_endpoints.patch(name=endpoint_name, add_tags=[EndpointTag(key="removeAfter", value=remove_after)])'
     assert serve.count(tag) == 1 and "delete_tags" not in serve
     tagging = serve[serve.index("\nif remove_after:\n"):]
@@ -295,12 +566,14 @@ def test_job_tasks_point_at_existing_notebooks_on_serverless():
             assert (path.parent / task["notebook_task"]["notebook_path"]).is_file()
             assert not {"existing_cluster_id", "new_cluster", "job_cluster_key"} & set(task)
     setup, daily = _jobs()["ecg12_afib_setup"][1], _jobs()["ecg12_afib_daily"][1]
-    # SETUP trains + gates on serverless GPU; DAILY scores on the driver with standard serverless and
-    # the ML v5 environment (torch CPU build), no GPU.
+    # SETUP trains + gates on serverless GPU with the AI v6 environment; every other task, DAILY's
+    # driver-side scoring included, runs on standard serverless environment 6, no GPU. Each is named,
+    # not the workspace default (which moves to new releases).
     assert {e["environment_key"]: e["spec"] for e in setup["environments"]} == {
-        "aiv5": {"base_environment": "databricks_ai_v5"}}
+        "aiv6": {"base_environment": "workspace-base-environments/databricks_ai_v6"},
+        "standard_v6": {"environment_version": "6"}}
     assert {e["environment_key"]: e["spec"] for e in daily["environments"]} == {
-        "ml_v5": {"base_environment": "databricks_ml_v5"}}
+        "standard_v6": {"environment_version": "6"}}
     # Only SETUP serves endpoints (05_), so only SETUP gets the endpoint prefix.
     assert {p["name"]: p["default"] for p in setup["parameters"]}["endpoint_prefix"] == "${var.endpoint_prefix}"
     assert "endpoint_prefix" not in {p["name"] for p in daily["parameters"]}
@@ -332,11 +605,103 @@ def test_job_tasks_point_at_existing_notebooks_on_serverless():
         return {t["task_key"]: (t.get("environment_key"), t.get("compute", {}).get("hardware_accelerator"))
                 for t in job["tasks"]}
 
-    gpu, ml, standard = ("aiv5", "GPU_1xA10"), ("ml_v5", None), (None, None)
-    assert accelerators(daily) == {"simulate_incoming_batch": standard, "arr_triage": ml, "afib_classify": ml}
+    gpu, standard = ("aiv6", "GPU_1xA10"), ("standard_v6", None)
+    assert accelerators(daily) == {"simulate_incoming_batch": standard, "arr_triage": standard,
+                                   "afib_classify": standard}
     assert accelerators(setup) == {
         "generate_training_data": standard, "train_arr_model": gpu, "train_afib_model": gpu,
         "validate_and_promote": gpu, "serve_endpoints": standard}
+
+
+def _task_environments():
+    """(notebook file name, environment spec as one (key, value) pair) for every job task."""
+    for _, job in _jobs().values():
+        specs = {e["environment_key"]: e["spec"] for e in job["environments"]}
+        for task in job["tasks"]:
+            # A task without an environment gets the workspace default, which moves to new releases.
+            assert "environment_key" in task, task["task_key"]
+            (spec,) = specs[task["environment_key"]].items()
+            yield Path(task["notebook_task"]["notebook_path"]).name, spec
+
+
+def test_no_pip_line_downgrades_what_the_task_environment_ships():
+    """Each %pip line only adds packages or moves them up from what the task's environment ships
+    (conftest.PREINSTALLED, from the release notes): a lower databricks-sdk or protobuf than the
+    environment's stops the Python kernel from restarting (05_ on environment 6 with databricks-sdk
+    0.102.0 / protobuf 5.29.6 did). Every package a line names has a recorded version there."""
+    checked = set()
+    for notebook, spec in _task_environments():
+        assert spec in PREINSTALLED, f"{notebook}: record what {spec} ships in conftest.PREINSTALLED"
+        for line in pip_lines(DEMO_ROOT / "workflow" / notebook):
+            for package, version in pip_pins(line):
+                assert package in PREINSTALLED[spec], f"{notebook}: record {package} for {spec}"
+                shipped = PREINSTALLED[spec][package]
+                assert shipped is None or Version(version) >= Version(shipped), (
+                    f"{notebook}: {package}=={version} is below the {shipped} that {spec} ships")
+                checked.add(notebook)
+    assert checked == {name for name, lines in PIP_LINES.items() if lines}
+
+
+def _runs(notebook, spec, package):
+    """The version of a package a notebook runs: its %pip line's pin, else what its environment ships."""
+    pinned = dict(p for line in pip_lines(DEMO_ROOT / "workflow" / notebook) for p in pip_pins(line))
+    return pinned.get(package, PREINSTALLED[spec][package])
+
+
+def test_every_notebook_using_mlflow_runs_the_models_mlflow_version():
+    """The training notebooks log with exactly the mlflow version the models' requirements name;
+    the gate, serving and batch notebooks run that version or a newer one. Each gets it from its
+    %pip line or, with none naming mlflow-skinny, from what its environment ships (the training
+    notebooks too, when their environment ships exactly the models' version)."""
+    (model_mlflow,) = [r.removeprefix("mlflow==") for r in config.MODEL_PIP_REQUIREMENTS if r.startswith("mlflow==")]
+    loggers = {"02_train_arr_model.py", "03_train_afib_model.py"}
+    users = loggers | {"04_validate_and_promote.py", "05_serve_endpoints.py", "07_arr_triage.py", "08_afib_classify.py"}
+    seen = set()
+    for notebook, spec in _task_environments():
+        if notebook not in users:
+            continue
+        runs = _runs(notebook, spec, "mlflow-skinny")
+        if notebook in loggers:
+            assert runs == model_mlflow, f"{notebook} logs with mlflow-skinny {runs}, the models name {model_mlflow}"
+        assert Version(runs) >= Version(model_mlflow), f"{notebook} runs mlflow-skinny {runs}"
+        seen.add(notebook)
+    assert seen == users
+
+
+def test_every_notebook_running_the_models_runs_their_torch_version():
+    """The training notebooks pickle the models with, and the gate and batch notebooks load them
+    with, exactly the torch version the models' requirements name (a CUDA build of it counts, as
+    in pip: torch==2.11.0 is met by 2.11.0+cu130). 05_ only calls the endpoints."""
+    (model_torch,) = [r.removeprefix("torch==") for r in config.MODEL_PIP_REQUIREMENTS if r.startswith("torch==")]
+    users = {"02_train_arr_model.py", "03_train_afib_model.py", "04_validate_and_promote.py",
+             "07_arr_triage.py", "08_afib_classify.py"}
+    seen = set()
+    for notebook, spec in _task_environments():
+        if notebook in users:
+            runs = _runs(notebook, spec, "torch")
+            assert runs is not None and Version(runs).public == model_torch, f"{notebook} runs torch {runs}"
+            seen.add(notebook)
+    assert seen == users
+
+
+def test_installed_mlflow_skinny_accepts_the_environments_sdk_and_protobuf():
+    """A %pip line that installs mlflow-skinny keeps the environment's databricks-sdk and protobuf
+    only when that mlflow-skinny version accepts them (conftest.MLFLOW_SKINNY_REQUIRES, from its
+    package metadata); otherwise pip would move them, which stops the Python kernel from restarting
+    when it moves them down."""
+    seen = set()
+    for notebook, spec in _task_environments():
+        for line in pip_lines(DEMO_ROOT / "workflow" / notebook):
+            version = dict(pip_pins(line)).get("mlflow-skinny")
+            if version is None:
+                continue
+            assert version in MLFLOW_SKINNY_REQUIRES, f"{notebook}: record what mlflow-skinny {version} requires"
+            for package, allowed in MLFLOW_SKINNY_REQUIRES[version].items():
+                runs = _runs(notebook, spec, package)
+                assert runs in SpecifierSet(allowed), (
+                    f"{notebook}: mlflow-skinny {version} requires {package}{allowed}, {spec} has {runs}")
+            seen.add(notebook)
+    assert seen == {"05_serve_endpoints.py", "07_arr_triage.py", "08_afib_classify.py"}
 
 
 def _string_literals(path):

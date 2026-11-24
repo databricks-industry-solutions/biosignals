@@ -19,10 +19,23 @@
 # MAGIC loaded with `mlflow.pyfunc.load_model` and its output `[p_not_afib, p_afib]` becomes
 # MAGIC `afib_predictions_0` / `afib_predictions_1`. `champion` is resolved to a concrete version first;
 # MAGIC that exact version scores and is recorded in `afib_model_info`. **Batch path, not the endpoint:**
-# MAGIC the serving endpoints and their `*_payload` inference tables are not involved.
+# MAGIC the serving endpoints and their `*_payload` inference tables are not involved. The model is loaded
+# MAGIC directly in the job, so Model Serving express deployment (which can apply to the endpoints in `05_`,
+# MAGIC see `docs/express-deployment.md`) does not apply here.
 # MAGIC
-# MAGIC **Compute:** standard serverless (CPU), base environment **ML v5** (same as `07_`; no %pip).
+# MAGIC **Compute:** standard serverless (CPU), **environment 6** (same as `07_`, including the
+# MAGIC mlflow-skinny 3.13.0 and torch 2.11.0 its first code cell installs).
 # MAGIC Parameters: `run_date`, `catalog_name` (required), `schema_name`.
+
+# COMMAND ----------
+
+# DBTITLE 1,Install mlflow-skinny 3.13.0 and torch 2.11.0, the models' versions (this environment ships mlflow-skinny 3.12.0, no torch)
+# MAGIC %pip install "mlflow-skinny==3.13.0" "torch==2.11.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

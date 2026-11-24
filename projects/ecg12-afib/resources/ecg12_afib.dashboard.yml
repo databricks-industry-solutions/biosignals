@@ -7,7 +7,8 @@
 resources:
   dashboards:
     ecg12_afib_dashboard:
-      # Both targets use mode: development, which prefixes "[dev <user>]".
+      # Both targets use mode: development, which prefixes "[dev <user>]"; the no_app target
+      # also appends " [no_app]" (databricks.yml) so the two deployments' dashboards differ.
       display_name: "ECG-AFib 12-lead Demo (batch + live)"
       file_path: ../dashboards/ecg12_afib.lvdash.json
       warehouse_id: ${var.warehouse_id}

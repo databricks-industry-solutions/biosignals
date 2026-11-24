@@ -6,9 +6,10 @@
 # bundled copy of cloudpickle (2.2.1), which predates cloudpickle's Python 3.12 support (3.0.0).
 # On Python 3.14 the local Spark tests fail with a RecursionError, so 3.12+ is not supported for
 # this suite.
-# Versions: pyspark 3.5.3 (local Spark); numpy 1.26.4 as the app pins it; torch, cloudpickle, pandas
-# and matplotlib as the AI v5 environment of the training and gate tasks ships them (the ML v5
-# environment of the batch tasks has the same torch 2.9.0, CPU build).
+# Versions: pyspark 3.5.3 (local Spark); numpy 1.26.4 as the app pins it; torch 2.9.0, cloudpickle
+# 3.0.0, pandas 2.2.3 and matplotlib 3.10.0, the suite's own: the jobs run AI Runtime environment 6
+# and standard environment 6 (torch 2.11.0, cloudpickle 3.1.1, pandas 2.3.3), which this Python 3.11
+# environment does not reproduce.
 #
 # Usage, from anywhere: dev/tests/run_tests_python311.sh [pytest arguments; default: dev/tests -q]
 # (pytest paths are relative to projects/ecg12-afib). See README.md in this folder.

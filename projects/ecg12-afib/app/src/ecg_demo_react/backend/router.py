@@ -294,7 +294,8 @@ def analyze(req: AnalyzeRequest, request: Request, serving: ServingClient, state
 @functools.cache
 def _warmup_inputs() -> list:
     """One fixed synthetic NSR ECG as a (1, N_LEADS, N_SAMPLES) tensor. One ECG per ping: a request
-    of two ECGs exceeds the 1 MiB cap above which AI Gateway does not log the payload."""
+    of two ECGs exceeds the 1 MiB cap above which AI Gateway does not log the payload
+    (https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)."""
     batch = synthesize_ecgs(np.array([NSR]), np.random.default_rng(0), noise_level=1.0, n_leads=config.N_LEADS)
     return batch.ecg[:1].astype(np.float32).tolist()
 

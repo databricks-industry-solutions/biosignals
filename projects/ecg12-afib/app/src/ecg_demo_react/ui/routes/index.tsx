@@ -47,6 +47,9 @@ function buildLinks(c: AppConfigOut) {
 }
 type Links = ReturnType<typeof buildLinks>;
 
+// This project's source code (public, the same for every deployment): the title's "ECG/AFib" links here.
+const SOURCE_REPO_URL = "https://github.com/databricks-industry-solutions/biosignals/tree/main/projects/ecg12-afib";
+
 const LINK_CLS = "font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900";
 
 /** A link class without what makes text look clickable (underline, its offset, hover colour). */
@@ -57,9 +60,11 @@ const UNLINKED_CLS = unlinked(LINK_CLS);   // LINK_CLS's size, weight and colour
 
 /** External link. Without a URL (app config not loaded, or no dashboard configured): the same text,
  *  size, weight and colour, but not underlined, so it never looks clickable. */
-function Ext({ href, className, children }: { href?: string; className?: string; children: ReactNode }) {
+function Ext({ href, className, title, children }: {
+  href?: string; className?: string; title?: string; children: ReactNode;
+}) {
   return href ? (
-    <a href={href} target="_blank" rel="noreferrer" className={className ?? LINK_CLS}>{children}</a>
+    <a href={href} target="_blank" rel="noreferrer" title={title} className={className ?? LINK_CLS}>{children}</a>
   ) : (
     <span className={className ? unlinked(className) : UNLINKED_CLS}>{children}</span>
   );
@@ -73,7 +78,13 @@ function App() {
   return (
     <div className="mx-auto min-h-screen w-full max-w-7xl bg-background px-6 pb-6 pt-10 text-slate-800">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold">🫀 ECG/AFib | Biosignals on Databricks — triage → classify</h1>
+        <h1 className="text-2xl font-bold">
+          🫀{" "}
+          <Ext href={SOURCE_REPO_URL} title="Source code on GitHub" className="underline-offset-4 hover:underline">
+            ECG/AFib<sup aria-hidden="true" className="ml-0.5 text-xs font-normal text-muted-foreground">↗</sup>
+          </Ext>{" "}
+          | Biosignals on Databricks — triage → classify
+        </h1>
         <p className="text-sm text-muted-foreground">
           Synthetic 12-lead ECG lands in <Ext href={links?.schema}>Unity Catalog</Ext> · an{" "}
           <Ext href={links?.arrModel}><em>arr</em> model</Ext> triages abnormal rhythms · an{" "}
@@ -182,8 +193,9 @@ function LiveTab({ links, cfg }: { links?: Links; cfg?: AppConfigOut }) {
           </Button>
           <p className="mt-3 text-xs text-muted-foreground">
             Each ECG is read in and scored live. The app writes no table itself, but AI Gateway logs
-            every model call, with the ECG sent and the scores returned, to that endpoint's
-            inference table in Unity Catalog. Batch ECGs land in Unity Catalog (Delta).
+            the model calls, with the ECG sent and the scores returned, to that endpoint's inference
+            table in Unity Catalog (with a delay of up to an hour; failed calls may be missing). Batch
+            ECGs land in Unity Catalog (Delta).
           </p>
           <Ext href={links?.infTable} className="text-xs font-medium text-slate-700 underline underline-offset-2">
             Inspect data lineage in Unity Catalog ↗
@@ -541,15 +553,20 @@ function ActionCard({ analysis }: { analysis: AnalyzeResponse }) {
 function BatchTab({ links }: { links?: Links }) {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <p className="text-sm text-muted-foreground">
-        Synthetic 12-lead ECGs and their synthetic patient records <strong>land in Unity Catalog</strong>{" "}
-        → <strong>arr triage</strong> → <strong>AFib classify</strong>, all governed. The 12-lead
-        AI/BI dashboard (embedded below once configured) has two separate sections.{" "}
-        <strong>Batch monitoring:</strong> the daily job scores with the champion models loaded from
-        Unity Catalog (daily funnel, arrivals per hour, triage by rhythm, AFib-probability
-        distribution, multi-day trend, patient context). <strong>Live serving:</strong> this app's
-        endpoint calls, from the endpoints' AI Gateway inference tables.
-      </p>
+      <div className="space-y-1">
+        <p className="text-sm text-muted-foreground">
+          Synthetic 12-lead ECGs and their synthetic patient records <strong>land in Unity Catalog</strong>{" "}
+          → <strong>arr triage</strong> → <strong>AFib classify</strong>, all governed. The 12-lead
+          AI/BI dashboard (embedded below once configured) has two separate sections.{" "}
+          <strong>Batch monitoring:</strong> the daily job scores with the champion models loaded from
+          Unity Catalog (daily funnel, arrivals per hour, triage by rhythm, AFib-probability
+          distribution, multi-day trend, patient context). <strong>Live serving:</strong> this app's
+          endpoint calls, from the endpoints' AI Gateway inference tables.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Live serving tiles can take up to an hour to show your first Triage → Classify requests.
+        </p>
+      </div>
       {!links ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : links.dashboardEmbed ? (

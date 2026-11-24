@@ -301,6 +301,7 @@ live_layout = [
             agg=("avg(execution_duration_ms)", "AVG(`execution_duration_ms`)"),
             period=("daily(request_time)", 'DATE_TRUNC("DAY", `request_time`)'),
             fmt={"type": "number", "decimalPlaces": {"type": "max", "places": 1}}),
+    # 1 MiB: the endpoint AI Gateway's logging limit (https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints).
     counter("kpi-not-logged", "live_requests", None, "Requests not logged (payload > 1 MiB)", 6, LIVE_Y, w=3,
             agg=("sum(not_logged)", "SUM(`not_logged`)")),
     counter("kpi-warmups", "live_warmups", None, "App warm-up pings (not in the other tiles)", 9, LIVE_Y, w=3,

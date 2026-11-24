@@ -44,9 +44,9 @@
 # MAGIC | `bio_ecg12_arr` (triage) | accuracy ≥ 0.95, ROC AUC ≥ 0.98, sensitivity ≥ 0.97, specificity ≥ 0.90 | a missed abnormal ECG never reaches the AFib model, so sensitivity has the highest floor |
 # MAGIC | `bio_ecg12_afib` (classify) | accuracy ≥ 0.95, ROC AUC ≥ 0.98, sensitivity ≥ 0.95, Other called AFib ≤ 0.05 | the classifier exists to separate AFib from the other fast rhythm, sinus tachycardia |
 # MAGIC
-# MAGIC These are engineering floors for synthetic data, where a healthy model scores ~1.0 (the rhythms
+# MAGIC These are engineering floors for synthetic data, where a healthy model scores about 1.0 (the rhythms
 # MAGIC are close to separable by design, see `00_overview`) and a model that predicts one class for
-# MAGIC everything scores ~0.67 accuracy and 0.5 ROC AUC. They are not clinical acceptance criteria.
+# MAGIC everything scores about 0.67 accuracy and 0.5 ROC AUC. They are not clinical acceptance criteria.
 # MAGIC Aliases are lowercase (`champion`, `challenger`) because Unity Catalog stores them lowercase.
 # MAGIC
 # MAGIC **Evaluation artifacts.** From the same hold-out scores (no second scoring pass), the gate run
@@ -63,7 +63,9 @@
 # MAGIC > evaluation workflow working end to end; it says nothing about how the models would do on a hard,
 # MAGIC > real clinical problem. Every figure carries this caption.
 # MAGIC
-# MAGIC **Compute:** serverless GPU, AI v5 (torch + mlflow present; no %pip).
+# MAGIC **Compute:** serverless GPU, AI v6 (torch 2.11.0). Nothing is installed: the environment ships
+# MAGIC mlflow-skinny 3.13.0, the version the models are logged with, and every other package as the
+# MAGIC training notebooks had it.
 
 # COMMAND ----------
 

@@ -42,7 +42,10 @@ GOVERNED_TAG_VALUES = {"validation_status": frozenset({"valid", "invalid"})}
 # torch versions are config.MODEL_PIP_REQUIREMENTS's.
 _GENERATOR_PIP = '# MAGIC %pip install --no-deps "neurokit2==0.2.12" "PyWavelets==1.4.1"'
 _MLFLOW_PIP = '# MAGIC %pip install "mlflow-skinny==3.13.0"'
-_SCORING_PIP = '# MAGIC %pip install "mlflow-skinny==3.13.0" "torch==2.11.0"'
+# PyTorch's CPU-only package index: torch==2.11.0 from PyPI is the CUDA build on Linux x86_64 and
+# pulls about 20 nvidia / CUDA packages and triton, which CPU serverless never uses.
+TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+_TORCH_CPU_PIP = f'# MAGIC %pip install --index-url={TORCH_CPU_INDEX} "torch==2.11.0"'
 PIP_LINES = {
     "00_overview.py": [],
     "01_generate_training_data.py": [_GENERATOR_PIP],
@@ -51,8 +54,8 @@ PIP_LINES = {
     "04_validate_and_promote.py": [],
     "05_serve_endpoints.py": [_GENERATOR_PIP, _MLFLOW_PIP],   # environment 6 ships mlflow-skinny 3.12.0
     "06_generate_batch_data.py": [_GENERATOR_PIP],
-    "07_arr_triage.py": [_SCORING_PIP],                # environment 6: loads the models, ships no torch
-    "08_afib_classify.py": [_SCORING_PIP],
+    "07_arr_triage.py": [_MLFLOW_PIP, _TORCH_CPU_PIP],   # environment 6: loads the models, ships no torch
+    "08_afib_classify.py": [_MLFLOW_PIP, _TORCH_CPU_PIP],
 }
 
 # What each job environment (its spec in resources/*.job.yml) ships of every package a %pip line

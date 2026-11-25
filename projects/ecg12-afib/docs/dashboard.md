@@ -35,10 +35,13 @@ table with a placeholder schema (`databricks_request_id` only) when `05_` enable
 real columns with the first delivered batch of logs.
 
 The dashboard's live tiles fill in after the endpoints have had requests: Databricks writes the
-request logs to the inference tables with a delay, and the docs say to expect them within an hour of
-a request ([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)).
-Refresh the dashboard after that; until the first logs arrive the live tiles show an error, while the
-batch tiles work as soon as DAILY has run. Nothing needs to be rebuilt or redeployed.
+request logs to the inference tables with a delay. For CPU custom-model endpoints such as these the
+docs say "rows are typically available within seconds", through a view over a telemetry table
+([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints));
+in the tested deployments rows arrived 20 to 60 minutes after a request (in the tested AWS
+deployment the tables were plain Delta tables, not that view; checked 2026-11-24). Refresh the
+dashboard after that; until the first logs arrive the live tiles show an error, while the batch
+tiles work as soon as DAILY has run. Nothing needs to be rebuilt or redeployed.
 
 **Ask Genie needs a publish after the first DAILY run.** A published dashboard includes a Genie
 Agent, which answers questions in plain language (**Ask Genie**), and the docs say: "When you
@@ -56,23 +59,27 @@ AWS and Azure:
   column, Ask Genie worked (it opened with suggested questions).
 
 So publish the dashboard once more after the DAILY job has run once. `./deploy.sh --run-daily` does
-it as its last step. Without `--run-daily`, or after a plain bundle deploy (target `no_app`), run
+it right after DAILY (its step 6). Without `--run-daily`, or after a plain bundle deploy (target `no_app`), run
 DAILY, then:
 
 ```bash
 databricks bundle summary -t <target> -p <profile> --var catalog=<catalog> --var warehouse_id=<warehouse-id> -o json | jq -r '.resources.dashboards.ecg12_afib_dashboard.id'
-databricks lakeview publish <dashboard-id> --warehouse-id <warehouse-id> --embed-credentials -p <profile>
+databricks lakeview publish <dashboard-id> --json '{"embed_credentials": true, "warehouse_id": "<warehouse-id>"}' -p <profile>
 ```
 
 `<target>` is `no_app` or `full`; the first command prints `<dashboard-id>` (without `jq`, run it
-without `-o json | jq ...`: the id is the part of the dashboard's URL after `/dashboardsv3/`). Leave
-out `--embed-credentials` if you deploy with `embed_credentials` set to `false`. In the workspace you
+without `-o json | jq ...`: the id is the part of the dashboard's URL after `/dashboardsv3/`). Write
+`"embed_credentials": false` if you deploy with `embed_credentials` set to `false`, and keep the
+field either way: the API's default for a missing `embed_credentials` is `true`
+([publish API](https://docs.databricks.com/api/workspace/lakeview/publish)), and CLI 0.280.0 sent no
+`embed_credentials` at all for `--embed-credentials=false`. (PowerShell: the JSON file pattern of
+the [quickstart](quickstart.md), step 5.) In the workspace you
 can instead open the dashboard and "Click Publish in the upper-right corner of the dashboard"
 ([Share a dashboard](https://docs.databricks.com/aws/en/dashboards/share/share)), keeping the same
 credentials setting.
 
 **Publish as the identity that deployed.** With embedded credentials, viewers' queries run as
-whoever published last: the CLI's `--embed-credentials` is the "Flag to indicate if the publisher's
+whoever published last: `embed_credentials` is the "Flag to indicate if the publisher's
 credentials should be embedded in the published dashboard", and "These embedded credentials will be
 used to execute the published dashboard's queries" ([publish API](https://docs.databricks.com/api/workspace/lakeview/publish)). The same goes for
 Publish in the workspace. So publish with the profile that deployed the bundle (`deploy.sh` uses its

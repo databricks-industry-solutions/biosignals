@@ -124,9 +124,10 @@ prints one line per endpoint, for example:
 bio_ecg12_arr-5: EXPRESS deployment (environment prepared in 2m47s; no container image build)
 ```
 
-It also tags each endpoint `deployment` = `express`, `standard` (a container image was built) or `unknown`
-(the build log or events could not be read, or they named neither path; this does not mean express wasn't
-used). The tag is set by this project's `05_`, not by the platform; it shows on the Serving page next to
+It also tags each endpoint `deployment` = `express` (its environment preparation completed, or was prepared
+earlier and reused), `standard` (a container image build finished) or `unknown` (the build log or events could
+not be read, a build had started and not finished, or they named neither path; this does not mean express
+wasn't used). The tag is set by this project's `05_`, not by the platform; it shows on the Serving page next to
 the endpoint's other tags.
 Neither `standard` nor `unknown` fails the task; `05_` prints a warning instead.
 

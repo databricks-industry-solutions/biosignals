@@ -159,8 +159,9 @@
 # MAGIC   `arr_triaged_12l_<date>`, `arr_triage_history_12l` and `dailyOrweekly_arr_afib_inference_12l`.
 # MAGIC * **Live path** (the app): every *Triage → Classify* click calls the serving endpoints, whose
 # MAGIC   requests and responses AI Gateway logs to their inference tables `bio_ecg12_arr_payload` and
-# MAGIC   `bio_ecg12_afib_payload`, with a delay of up to an hour (one 12-lead ECG is about 650 KB of JSON,
-# MAGIC   inside the 1 MiB logging limit; requests that end in an error may not be logged;
+# MAGIC   `bio_ecg12_afib_payload`, with a delay (the docs say seconds for CPU endpoints such as these;
+# MAGIC   20 to 60 minutes in our tests; one 12-lead ECG is about 650 KB of JSON, inside the 1 MiB
+# MAGIC   logging limit; requests that end in an error may not be logged;
 # MAGIC   [inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)). AI Gateway
 # MAGIC   usage tracking also records the requests in `system.serving.endpoint_usage`.
 # MAGIC

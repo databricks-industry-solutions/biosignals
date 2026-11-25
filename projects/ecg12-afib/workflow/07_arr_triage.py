@@ -22,16 +22,25 @@
 # MAGIC loaded directly in the job, so Model Serving express deployment (which can apply to the endpoints in
 # MAGIC `05_`, see `docs/express-deployment.md`) does not apply here.
 # MAGIC
-# MAGIC **Compute:** standard serverless (CPU), **environment 6**. The first code cell installs the
+# MAGIC **Compute:** standard serverless (CPU), **environment 6**. The first code cells install the
 # MAGIC models' versions: mlflow-skinny 3.13.0 (the environment ships 3.12.0) and torch 2.11.0 (the
-# MAGIC environment ships no torch), and leaves every other package (numpy, pandas, cloudpickle,
+# MAGIC environment ships no torch), and leave every other package (numpy, pandas, cloudpickle,
 # MAGIC databricks-sdk, protobuf) as the environment ships it, at the versions the models were trained
-# MAGIC with. Parameters: `run_date`, `catalog_name` (required), `schema_name`.
+# MAGIC with. torch comes from PyTorch's CPU-only package index, on its own `%pip` line: from PyPI, torch
+# MAGIC 2.11.0 on Linux is the CUDA build, which also installs about 20 nvidia / CUDA packages and
+# MAGIC triton that a CPU task never uses. If your workspace cannot reach `download.pytorch.org`
+# MAGIC (restricted network access from serverless compute, or only an internal package mirror), that
+# MAGIC line fails: drop its `--index-url=...` to install the CUDA build from your default index. Parameters: `run_date`, `catalog_name` (required), `schema_name`.
 
 # COMMAND ----------
 
-# DBTITLE 1,Install mlflow-skinny 3.13.0 and torch 2.11.0, the models' versions (this environment ships mlflow-skinny 3.12.0, no torch)
-# MAGIC %pip install "mlflow-skinny==3.13.0" "torch==2.11.0"
+# DBTITLE 1,Install mlflow-skinny 3.13.0, the models' version (this environment ships 3.12.0)
+# MAGIC %pip install "mlflow-skinny==3.13.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Install torch 2.11.0, the models' version, CPU build (this environment ships no torch)
+# MAGIC %pip install --index-url=https://download.pytorch.org/whl/cpu "torch==2.11.0"
 
 # COMMAND ----------
 

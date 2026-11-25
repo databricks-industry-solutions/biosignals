@@ -87,9 +87,14 @@ in one Delta transaction; `uc_io.write_date_slice` refuses any existing table wi
 - **Live** (the app): each *Triage → Classify* sends one ECG to the triage endpoint
   (`<endpoint_prefix>_arr`) and, when flagged, to the classify endpoint (`<endpoint_prefix>_afib`);
   AI Gateway logs the requests and responses to `bio_ecg12_arr_payload` /
-  `bio_ecg12_afib_payload`, with a delay ("You can expect logs to be available within 1 hour of a
-  request") and with documented gaps: a request or response over 1 MiB is not logged, and for
-  custom model endpoints such as these "logs may not be recorded for any 4xx or 5xx errors"
+  `bio_ecg12_afib_payload`, with a delay: the docs say that for CPU custom-model endpoints such as
+  these the table is a view over a telemetry table and "rows are typically available within
+  seconds" (the "within 1 hour" best-effort delivery is for Foundation Model API, external-model and
+  agent endpoints), but in the tested deployments rows arrived 20 to 60 minutes after a request
+  (in the tested AWS deployment the `_payload` tables were plain Delta tables, not that view;
+  checked 2026-11-24). The docs also list gaps: a request or response over 1 MiB is
+  "logged as `null`", and for custom model endpoints "logs may not be recorded for any 4xx or 5xx
+  errors"
   ([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)). One 12-lead
   ECG is about 650 KB of JSON, inside that 1 MiB logging limit; a request above 1 MiB is served but
   logged with `MAX_REQUEST_SIZE_EXCEEDED` and a null payload, so `05_`'s smoke test and the app's
@@ -130,7 +135,12 @@ needed. The notebooks that log, load or serve the models
 run one MLflow version, 3.13 (it records the serverless environment version with the model): `02_`
 to `04_` get it with their environment (the AI Runtime environment 6, AI v6, ships it), and `05_`,
 `07_` and `08_` install it over the 3.12 that standard serverless environment 6 ships (`07_` and
-`08_` also install the models' torch 2.11.0, which environment 6 does not ship). No notebook
+`08_` also install the models' torch 2.11.0, which environment 6 does not ship: its CPU build, on a
+`%pip` line of its own from PyTorch's CPU-only index, since PyPI's torch 2.11.0 for Linux is the CUDA
+build and brings about 20 nvidia / CUDA packages and triton a CPU task never uses; that index is in
+those notebooks' install only, not in the models' requirements, so it does not affect express
+deployment; a workspace whose serverless compute cannot reach `download.pytorch.org` needs that
+`--index-url=...` removed). No notebook
 installs a package version below the one its environment ships: an older databricks-sdk or protobuf
 than the environment's stops the Python kernel from restarting. And `02_` and `03_` log
 each model with an explicit list, `MODEL_PIP_REQUIREMENTS` in `common/config.py`: only mlflow,
@@ -146,13 +156,22 @@ minutes an endpoint took to become ready); with express deployment that event is
 are ready (`common/deployment_path.py`, from the served model's build log and the endpoint's
 events): it prints one line per endpoint, such as `bio_ecg12_arr-2: EXPRESS deployment (environment
 prepared in 4m00s; no container image build)`, and tags the endpoint `deployment` = `express`,
-`standard` or `unknown`. The build log comes first: an update that keeps a served model reuses its
-prepared environment and adds no new events, and its build log still begins "This environment was
-prepared ahead of time by express deployment". `unknown` means the build log or the events could
-not be read (an API error, a timeout, an unexpected response) or they named neither path, not that
-express was not used. Both reads are needed: a container image build (express that fell back) shows
-only in the events, so an express build log without readable events is `unknown`, not `express`. Anything but `express` is a printed warning, not a failed task, because eligibility is Model
-Serving's decision and the endpoint serves either way.
+`standard` or `unknown`. Only a finished build names the path: "Model artifact preparation
+completed successfully" for express, "Container image creation finished successfully" for standard;
+one that started and has not finished is `unknown`. An update that keeps a served model reuses its
+prepared environment and adds no new events; its build log then still began "This environment was
+prepared ahead of time by express deployment" in our tests, which counts as express. `unknown`
+means the build log or the events could not be read (an API error, a timeout, an unexpected
+response), a build had not finished, or they named neither path, not that express was not used.
+Both reads are needed: we assume (no Databricks page says so) that express which falls back to an
+image build may still have written an express line to the build log, so a container image build,
+which shows only in the events, wins, and an express build log without readable events is
+`unknown`, not `express`.
+Each of those events carries the config version of its update, and only the served model's latest
+preparation or image build counts: an image built by an earlier, failed attempt does not make a
+later express preparation `standard`. When the events cannot say which came last (both kinds under
+one reused config version, or a config version on some events only), the path is `unknown`. Anything but `express` is a printed warning, not a failed
+task, because eligibility is Model Serving's decision and the endpoint serves either way.
 In the Serving UI the build log is under the endpoint's **Logs > Build logs** (pick the served
 model). Tested end to end on AWS and on Azure, with both endpoints on the express path; on Google
 Cloud the express deployment page still requires `env_pack`, which this project doesn't use, so

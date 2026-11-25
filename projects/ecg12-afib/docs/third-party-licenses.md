@@ -37,7 +37,7 @@ pin it. Licenses were read from each package's own metadata or license file.
 | `starlette` | 1.10.0 | Serving the built UI files (`backend/core/_static.py`) | BSD-3-Clause | Copyright © 2018, Encode OSS Ltd | [repo](https://github.com/Kludex/starlette) |
 | `tailwind-merge` | 3.4.0 | Merging CSS classes (`ui/lib/utils.ts`) | MIT | Copyright (c) 2021 Dany Castillo | [repo](https://github.com/dcastil/tailwind-merge) |
 | `tailwindcss` | 4.3.3 | UI styling (`ui/styles/globals.css`; declared directly in `package.json`) | MIT | Copyright (c) Tailwind Labs, Inc. | [repo](https://github.com/tailwindlabs/tailwindcss) |
-| `torch` (PyTorch) | preinstalled in AI v6 (2.11.0, CUDA 13 build; notebooks 02-04); 2.11.0 (notebooks 07, 08); 2.11.0 in the served models' requirements | The two neural-network models and their training (`common/training.py`, notebooks 02, 03) | BSD-3-Clause | Copyright (c) 2016- Facebook, Inc. (Adam Paszke) and the other contributors listed in its LICENSE | [repo](https://github.com/pytorch/pytorch) |
+| `torch` (PyTorch) | preinstalled in AI v6 (2.11.0, CUDA 13 build; notebooks 02-04); 2.11.0, CPU build from PyTorch's CPU-only index (notebooks 07, 08); 2.11.0 in the served models' requirements | The two neural-network models and their training (`common/training.py`, notebooks 02, 03) | BSD-3-Clause | Copyright (c) 2016- Facebook, Inc. (Adam Paszke) and the other contributors listed in its LICENSE | [repo](https://github.com/pytorch/pytorch) |
 | `uvicorn` | 0.49.0 | Runs the app's web server (`app/app.yml`) | BSD-3-Clause | Copyright © 2017-present, Encode OSS Ltd | [repo](https://github.com/Kludex/uvicorn) |
 
 Pinned but not imported by the project's code: `cloudpickle` 3.1.1 (BSD-3-Clause), which MLflow

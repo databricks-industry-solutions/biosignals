@@ -194,7 +194,8 @@ function LiveTab({ links, cfg }: { links?: Links; cfg?: AppConfigOut }) {
           <p className="mt-3 text-xs text-muted-foreground">
             Each ECG is read in and scored live. The app writes no table itself, but AI Gateway logs
             the model calls, with the ECG sent and the scores returned, to that endpoint's inference
-            table in Unity Catalog (with a delay of up to an hour; failed calls may be missing). Batch
+            table in Unity Catalog (in our tests rows arrived 20 to 60 minutes after a call, although the
+            docs now say seconds for CPU endpoints; failed calls may be missing). Batch
             ECGs land in Unity Catalog (Delta).
           </p>
           <Ext href={links?.infTable} className="text-xs font-medium text-slate-700 underline underline-offset-2">
@@ -564,7 +565,8 @@ function BatchTab({ links }: { links?: Links }) {
           endpoint calls, from the endpoints' AI Gateway inference tables.
         </p>
         <p className="text-xs text-muted-foreground">
-          Live serving tiles can take up to an hour to show your first Triage → Classify requests.
+          Live serving tiles can take a while to show your first Triage → Classify requests: 20 to 60
+          minutes in our tests.
         </p>
       </div>
       {!links ? (

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES, PIP_LINES, pip_lines
+from conftest import DEMO_ROOT, GOVERNED_TAG_VALUES, PIP_LINES, TORCH_CPU_INDEX, pip_lines
 
 from common import config
 
@@ -237,10 +237,13 @@ def test_serving_never_takes_over_another_deployments_endpoint():
     code = _python_source(WORKFLOW / "05_serve_endpoints.py")
     assert 'dbutils.widgets.text("endpoint_prefix", config.ENDPOINT_PREFIX, label="endpoint_prefix")' in code
     assert 'arr_endpoint, afib_endpoint = config.endpoint_names(dbutils.widgets.get("endpoint_prefix"))' in code
-    assert "served = served_models(w.serving_endpoints.get(name=endpoint_name))" in code
-    assert "if served != {full}:" in code and "raise RuntimeError(" in code and "endpoint_prefix" in code
-    # The check runs for both endpoints (its own cell) before the first create / update call.
-    assert code.index("if served != {full}:") < code.index("deployed[endpoint_name] = deploy(model_name, endpoint_name, existing)")
+    assert "check_ownership(endpoint_name, w.serving_endpoints.get(name=endpoint_name), full)" in code
+    assert "raise RuntimeError(" in code and "endpoint_prefix" in code
+    # The check runs for both endpoints (its own cell) before the first create / update call, and
+    # again in deploy() on the snapshot it sends the update from.
+    assert code.index("check_ownership(endpoint_name, w.serving_endpoints") < code.index(
+        "deployed[endpoint_name] = deploy(model_name, endpoint_name, existing)")
+    assert "check_ownership(endpoint_name, ep, full)" in code
     assert "table_name_prefix=model_name" in code and "table_name_prefix=endpoint_name" not in code
     assert "config.payload_table(model_name, catalog, schema)" in code
 
@@ -287,22 +290,41 @@ class _ServingEndpoints:
     makes a new pending config, IN_PROGRESS for ``polls`` gets, then ends as ``outcome`` ("succeed":
     it becomes the current config; "fail": UPDATE_FAILED with the entity aborted; a (deployment state,
     message) pair: UPDATE_FAILED with that). ``lag``: gets that still return the endpoint as it was
-    before the update (the update not registered yet). ``reuse_version``: the new pending config keeps
-    the latest version number instead of the next one. ``reject``: update_endpoint raises it.
-    ``events``: the endpoints' events API (``api_client.do``) answers with these, plus, when an update
-    fails, the two events Model Serving writes then (seen live), stamped with the clock's time in
-    milliseconds plus ``event_offset_ms`` (Model Serving's clock need not match the notebook's);
-    ``events_error``: the events call raises it, on every call or (``events_error_calls``) on the
-    first n; ``late_events``: added to the events from the second read on (delivered late). The clock
-    is _run_deploy_cells'."""
+    before the update (the update not registered yet); ``idle``: gets after those that return the new
+    pending config with the state still NOT_UPDATING (registered, not started yet). ``reuse_version``:
+    the new pending config keeps the latest version number instead of the next one. ``reject``:
+    update_endpoint raises it. A pending config carries ``start_time``, Model Serving's timestamp of
+    when that update started: the clock's time in milliseconds plus ``start_offset_ms`` (Model
+    Serving's clock need not match the notebook's), or ``start_time`` when given (to make it equal an
+    earlier one); ``start_times=False``: the API leaves it out. ``stale``: gets after the update
+    registers that show its new pending config with the state still the one from before the update
+    (a snapshot whose parts were read at different moments).
+    ``events_error``: the endpoints' events API (``api_client.do``, which the wait must not need)
+    raises it; ``event_reads`` counts its calls. ``progress_state``: the deployment state the new
+    pending config's served entity shows until the update ends (None: no state). ``rival``: another
+    writer's served entity (name, model, version) that replaces this update's in the pending config
+    once it registers. ``no_state``: gets after the update registers that show no endpoint state.
+    ``per``: per-endpoint ``outcome`` / ``polls``. ``missing``: fields of the new pending config's
+    served entity the API leaves out (None; the SDK models them as optional). ``current_missing``:
+    (fields, gets): once the update has completed, the first ``gets`` gets leave those fields out of
+    the current config. ``baseline_missing``: (fields, when): the pending config left before the
+    update leaves them out when deploy() reads it ("read") or in the polls after the update that
+    still show it ("later"); "current.<field>" names a field of the current config instead (left
+    out when deploy() reads it, given in later polls). A field is a config's (config_version, start_time, traffic_config), its
+    route's ("route.<name>"), "state" (the served entity's deployment state) or its served entity's
+    (see _drop). The clock is _run_deploy_cells'."""
 
     def __init__(self, endpoints, outcome="succeed", polls=2, lag=0, reuse_version=False, reject=None,
-                 events=(), events_error=None, events_error_calls=None, event_offset_ms=0, late_events=()):
+                 events_error=None, idle=0, start_offset_ms=0, start_times=True, start_time=None, stale=0,
+                 progress_state="DEPLOYMENT_CREATING", rival=None, no_state=0, per=None, missing=(),
+                 current_missing=((), 0), baseline_missing=((), None)):
         self.endpoints, self.outcome, self.polls, self.lag = endpoints, outcome, polls, lag
+        self.progress_state, self.rival, self.no_state, self.per = progress_state, rival, no_state, per or {}
+        self.missing, self.current_missing, self.baseline_missing = missing, current_missing, baseline_missing
+        self.idle, self.start_offset_ms, self.start_times = idle, start_offset_ms, start_times
+        self.start_time, self.stale = start_time, stale
         self.reuse_version, self.reject = reuse_version, reject
-        self.events, self.events_error, self.clock = list(events), events_error, None
-        self.events_error_calls, self.event_offset_ms, self.event_reads = events_error_calls, event_offset_ms, 0
-        self.late_events = list(late_events)
+        self.events_error, self.clock, self.event_reads = events_error, None, 0
         self.updates, self.creates, self.gateways, self.gets = [], [], [], 0
         self.serving_endpoints = SimpleNamespace(get=self.get, put_ai_gateway=self.put_ai_gateway)
         self.api_client = SimpleNamespace(do=self.do)
@@ -315,10 +337,22 @@ class _ServingEndpoints:
         return SimpleNamespace(
             config_version=version, served_models=None,
             served_entities=[SimpleNamespace(name=name, entity_name=full, entity_version=ver, workload_size="Small",
-                                             scale_to_zero_enabled=True, state=SimpleNamespace(
+                                             scale_to_zero_enabled=True, state=None if deployment is None else SimpleNamespace(
                                                  deployment=_Deployment[deployment], deployment_state_message=message))],
             traffic_config=SimpleNamespace(routes=[SimpleNamespace(served_model_name=name, served_entity_name=None,
                                                                    traffic_percentage=100)]))
+
+    @staticmethod
+    def _drop(endpoint_config, field):
+        """Leave ``field`` out of a config (None, as the SDK gives a field the API did not return)."""
+        if field in ("config_version", "start_time", "traffic_config", "served_entities"):
+            setattr(endpoint_config, field, None)
+        elif field == "served_entities[]":                       # listed, but empty
+            endpoint_config.served_entities = []
+        elif field.startswith("route."):
+            setattr(endpoint_config.traffic_config.routes[0], field[len("route."):], None)
+        else:
+            setattr(endpoint_config.served_entities[0], field, None)
 
     def get(self, name):
         self.gets += 1
@@ -326,43 +360,67 @@ class _ServingEndpoints:
         if e.get("lag"):
             e["lag"] -= 1
             snapshot = e["before"]
+        elif e.get("no_state"):
+            e["no_state"] -= 1
+            return SimpleNamespace(name=name, config=None, pending_config=None, state=None)
+        elif e.get("idle"):
+            e["idle"] -= 1
+            snapshot = {**e, "update": "NOT_UPDATING"}
+        elif e.get("stale"):
+            e["stale"] -= 1
+            snapshot = {**e, "update": e["before"]["update"]}
         else:
             if e.get("remaining") is not None:
                 if e["remaining"] > 0:
                     e["remaining"] -= 1
                 else:
                     e["remaining"] = None
-                    if self.outcome == "succeed":
-                        e.update(version=e["pending"][0], entity=e["pending"][1], pending=None, update="NOT_UPDATING")
+                    if e["outcome"] == "succeed":
+                        e.update(version=e["pending"][0], entity=e["pending"][1], pending=None, pending_start=None,
+                                 update="NOT_UPDATING", current_missing=self.current_missing[1])
                     else:
-                        deployment, message = ("DEPLOYMENT_ABORTED", None) if self.outcome == "fail" else self.outcome
+                        deployment, message = ("DEPLOYMENT_ABORTED", None) if e["outcome"] == "fail" else e["outcome"]
                         e.update(update="UPDATE_FAILED", pending=(*e["pending"][:2], deployment, message))
-                        version, (entity_name, *_) = e["pending"][:2]
-                        now_ms = self.clock.now * 1000 + self.event_offset_ms
-                        self.events += [
-                            {"event_type": "SERVED_ENTITY_SERVICE_EVENT", "timestamp": now_ms, "served_entity_name": entity_name,
-                             "message": ABORTED.format(name=entity_name, version=version) + "."},
-                            {"event_type": "ENDPOINT_UPDATE_EVENT", "timestamp": now_ms + 50, "served_entity_name": None,
-                             "message": f"Endpoint update failed for endpoint `{name}`, config version {version}."}]
             snapshot = e
         current = self._config(snapshot["version"], snapshot["entity"]) if snapshot.get("entity") else None
+        if current is not None and "before" not in e and self.baseline_missing[1] == "read":
+            for field in self.baseline_missing[0]:
+                if field.startswith("current."):
+                    self._drop(current, field[len("current."):])
+        if snapshot is e and e.get("current_missing"):
+            e["current_missing"] -= 1
+            for field in self.current_missing[0]:
+                self._drop(current, field)
         pending = None
         if snapshot.get("pending"):
             version, entity, deployment, *custom = snapshot["pending"]
             message = (custom[0] if custom and custom[0] else ABORTED.format(name=entity[0], version=version)
                        if deployment == "DEPLOYMENT_ABORTED" else "Deploying")
             pending = self._config(version, entity, deployment, message)
+            pending.start_time = snapshot.get("pending_start") if self.start_times else None
+            for field in snapshot.get("missing", ()):
+                self._drop(pending, field)
+            fields, when = self.baseline_missing
+            if ("before" not in e and when == "read") or (when == "later" and snapshot is e.get("before")):
+                for field in fields:
+                    if not field.startswith("current."):
+                        self._drop(pending, field)
         return SimpleNamespace(name=name, config=current, pending_config=pending, state=SimpleNamespace(
             config_update=_ConfigUpdate[snapshot["update"]], ready=_Ready["READY" if current else "NOT_READY"]))
 
     def _start(self, name, endpoint_config):
         e = self.endpoints.setdefault(name, {"version": 0, "entity": None, "update": "NOT_UPDATING", "pending": None})
         (entity,) = endpoint_config["served_entities"]
-        e["before"] = {k: e[k] for k in ("version", "entity", "update", "pending")}
+        e["before"] = {k: e.get(k) for k in ("version", "entity", "update", "pending", "pending_start")}
         latest = max([e["version"]] + ([e["pending"][0]] if e["pending"] else []))
+        per = self.per.get(name, {})
         e.update(pending=(latest + (0 if self.reuse_version else 1),
-                          (entity["name"], entity["entity_name"], entity["entity_version"]),
-                          "DEPLOYMENT_CREATING"), update="IN_PROGRESS", remaining=self.polls, lag=self.lag)
+                          self.rival or (entity["name"], entity["entity_name"], entity["entity_version"]),
+                          self.progress_state), update="IN_PROGRESS", remaining=per.get("polls", self.polls),
+                 outcome=per.get("outcome", self.outcome), lag=self.lag, idle=self.idle, stale=self.stale,
+                 no_state=self.no_state, missing=self.missing,
+                 pending_start=self.start_time if self.start_time is not None
+                 else round(self.clock.now * 1000) + self.start_offset_ms)
 
     def update_endpoint(self, endpoint, config):
         self.updates.append((endpoint, config))
@@ -380,26 +438,26 @@ class _ServingEndpoints:
     def do(self, method, path):
         assert method == "GET" and path.endswith("/events")
         self.event_reads += 1
-        if self.event_reads > 1:
-            self.events, self.late_events = self.events + self.late_events, []
-        if self.events_error is not None and (self.events_error_calls is None or self.event_reads <= self.events_error_calls):
+        if self.events_error is not None:
             raise self.events_error
-        return {"events": [e for e in self.events if path == f"/api/2.0/serving-endpoints/{e.get('endpoint', 'ep')}/events"]}
+        return {"events": []}
 
 
 def _endpoint(version, served_version, update="NOT_UPDATING", pending=None, pending_served=None):
     """An existing endpoint ``ep`` at config ``version`` serving model version ``served_version``, with
     an aborted pending config ``pending`` (its version) for model version ``pending_served`` (default:
-    the served one)."""
+    the served one), left by an update that started at 400,000 ms on Model Serving's clock."""
     full = config.uc_name(config.ARR_MODEL_NAME, "cat", "sch")
     left = pending_served or served_version
     return {"version": version, "entity": (f"ep-{served_version}", full, served_version), "update": update,
-            "pending": None if pending is None else (pending, (f"ep-{left}", full, left), "DEPLOYMENT_ABORTED")}
+            "pending": None if pending is None else (pending, (f"ep-{left}", full, left), "DEPLOYMENT_ABORTED"),
+            "pending_start": None if pending is None else 400_000}
 
 
-def _run_deploy_cells(serving, champion="2", clock=None):
-    """05_'s helper, issue and wait cells on the stand-in, for one endpoint ``ep`` serving the ARR
-    model; returns (output, clock)."""
+def _run_deploy_cells(serving, champion="2", clock=None, served=((config.ARR_MODEL_NAME, "ep"),), refusal=False):
+    """05_'s helper, issue and wait cells on the stand-in, for the (model, endpoint) pairs ``served``
+    (default: one endpoint ``ep`` serving the ARR model), with ``refusal`` its ownership-check cell
+    first; returns (output, clock). The cells' namespace is left on ``serving.namespace``."""
     from common import deployment_path
 
     clock = clock or _Clock()
@@ -408,19 +466,102 @@ def _run_deploy_cells(serving, champion="2", clock=None):
     (helpers,) = [c for c in cells if "def wait_for_endpoint_ready(" in c]
     (issue,) = [c for c in cells if "# DBTITLE 1,Issue both deploys" in c]
     (wait,) = [c for c in cells if "# DBTITLE 1,Wait for both ready" in c]
+    (check,) = [c for c in cells if "# DBTITLE 1,Refuse an existing endpoint" in c]
     namespace = {
         "w": SimpleNamespace(serving_endpoints=serving.serving_endpoints, api_client=serving.api_client),
         "deploy_client": serving.deploy_client, "deployment_path": deployment_path,
         "time": clock, "config": config, "catalog": "cat", "schema": "sch", "mc": None,
         "scoring": SimpleNamespace(resolve_alias=lambda client, full, alias: SimpleNamespace(version=champion)),
-        "EndpointStateConfigUpdate": _ConfigUpdate, "SERVED": ((config.ARR_MODEL_NAME, "ep"),),
+        "EndpointStateConfigUpdate": _ConfigUpdate, "SERVED": served,
         "existing": set(serving.endpoints), "AiGatewayInferenceTableConfig": lambda **kw: kw,
         "AiGatewayUsageTrackingConfig": lambda **kw: kw}
+    serving.namespace = namespace
     printed = io.StringIO()
     with contextlib.redirect_stdout(printed):
-        for cell in (helpers, issue, wait):
+        for cell in (helpers, check, issue, wait) if refusal else (helpers, issue, wait):
             exec(compile(cell, "05_serve_endpoints.py", "exec"), namespace)   # noqa: S102 (the repo's own notebook cells)
     return printed.getvalue(), clock
+
+
+def _run_refusal_cell(endpoint):
+    """05_'s helper cell and its refusal cell for one existing endpoint ``ep`` (a stand-in config)."""
+    cells = _cells(WORKFLOW / "05_serve_endpoints.py")
+    (helpers,) = [c for c in cells if "def wait_for_endpoint_ready(" in c]
+    (refusal,) = [c for c in cells if "# DBTITLE 1,Refuse an existing endpoint" in c]
+    namespace = {"EndpointStateConfigUpdate": _ConfigUpdate, "config": config, "catalog": "cat", "schema": "sch",
+                 "SERVED": ((config.ARR_MODEL_NAME, "ep"),),
+                 "w": SimpleNamespace(serving_endpoints=SimpleNamespace(get=lambda name: endpoint)),
+                 "deploy_client": SimpleNamespace(list_endpoints=lambda: [{"name": "ep"}])}
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        for cell in (helpers, refusal):
+            exec(compile(cell, "05_serve_endpoints.py", "exec"), namespace)   # noqa: S102 (the repo's own notebook cells)
+    return printed.getvalue()
+
+
+def test_serving_refusal_never_takes_missing_model_names_for_another_deployment():
+    """An existing endpoint whose served entity leaves out its model name is not "another
+    deployment's": the task stops saying it could not tell which model the endpoint serves. One that
+    names another model is refused as another deployment's; this deployment's goes on."""
+    full = config.uc_name(config.ARR_MODEL_NAME, "cat", "sch")
+    ours = _ServingEndpoints._config(4, ("ep-1", full, "1"))
+    endpoint = SimpleNamespace(config=ours, pending_config=None)
+    assert "exists and serves cat.sch.bio_ecg12_arr" in _run_refusal_cell(endpoint)
+    unnamed = _ServingEndpoints._config(4, ("ep-1", None, "1"))
+    with pytest.raises(RuntimeError) as raised:
+        _run_refusal_cell(SimpleNamespace(config=unnamed, pending_config=None))
+    assert "could not tell which model" in str(raised.value) and "another deployment" not in str(raised.value)
+    other = _ServingEndpoints._config(4, ("ep-1", "c.s.other", "1"))
+    with pytest.raises(RuntimeError, match="belongs to another deployment"):
+        _run_refusal_cell(SimpleNamespace(config=other, pending_config=None))
+
+
+OURS = config.uc_name(config.ARR_MODEL_NAME, "cat", "sch")
+
+
+def _ownership_case(case):
+    """An existing endpoint ``ep`` for the ownership guard. "own": this deployment's model, current
+    and pending. "current-unknown-*": the current config left out, or listing no served model, while a
+    pending config names this deployment's model. "pending-unreadable-*": the current config names
+    it, and a pending config is there but its served models are left out or empty. "other": the
+    current config serves another deployment's model."""
+    leftover = _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")
+    if case == "own":
+        return _ServingEndpoints({"ep": leftover})
+    if case == "current-unknown-missing":
+        return _ServingEndpoints({"ep": {**leftover, "entity": None}})
+    if case == "current-unknown-empty":
+        return _ServingEndpoints({"ep": leftover}, baseline_missing=(("current.served_entities[]",), "read"))
+    if case.startswith("pending-unreadable"):
+        field = "served_entities" if case.endswith("missing") else "served_entities[]"
+        return _ServingEndpoints({"ep": leftover}, baseline_missing=((field,), "read"))
+    return _ServingEndpoints({"ep": {**leftover, "entity": ("ep-1", "c.s.another_model", "1")}})
+
+
+@pytest.mark.parametrize("refusal", [True, False], ids=["ownership-cell", "deploy-before-sending"])
+@pytest.mark.parametrize("case", ["current-unknown-missing", "current-unknown-empty", "pending-unreadable-missing",
+                                  "pending-unreadable-empty", "other", "own"])
+def test_serving_ownership_guard_fails_safe_before_every_update(case, refusal):
+    """The ownership guard, fail safe, in the ownership cell (both endpoints before either changes)
+    and in deploy() on the very snapshot it updates from: the current config must be readable and
+    serve only this deployment's model, and a pending config there must name only that model too.
+    Anything unknown stops the task with "could not tell which model", another model as another
+    deployment's, and neither ever sends the update; this deployment's own endpoint is updated (before:
+    a pending config naming this model passed for an unknown current config, and a known current
+    model hid an unreadable pending config)."""
+    serving = _ownership_case(case)
+    if case == "own":
+        _run_deploy_cells(serving, refusal=refusal)
+        assert len(serving.updates) == 1 and serving.endpoints["ep"]["entity"][0] == "ep-2"
+        return
+    with pytest.raises(RuntimeError) as raised:
+        _run_deploy_cells(serving, refusal=refusal)
+    message = str(raised.value)
+    if case == "other":
+        assert "belongs to another deployment" in message and "c.s.another_model" in message, message
+    else:
+        assert "could not tell which model" in message and "another deployment" not in message, message
+    assert serving.updates == [] and serving.creates == []
 
 
 def test_serving_rerun_at_the_served_champion_sends_no_update():
@@ -459,10 +600,10 @@ def test_serving_updates_an_endpoint_at_the_champion_that_still_has_a_pending_co
                          ids=["succeed", "fail"])
 def test_serving_update_that_reuses_the_config_version_settles_without_the_timeout(outcome):
     """Should Model Serving keep the config version number for the update, its result still settles
-    the wait (completed on the champion config, or seen IN_PROGRESS and then ended on it), while the
-    earlier UPDATE_FAILED at the same champion config, still showing right after the update call
-    (``lag``), is not taken for it: a failure stops the task with the new failure's message, not the
-    earlier one's (DEPLOYMENT_ABORTED)."""
+    the wait (completed on the champion config, or a failure of the pending config that is not the
+    one left before), while the earlier UPDATE_FAILED at the same champion config, still showing right
+    after the update call (``lag``), is not taken for it: a failure stops the task with the new
+    failure's message, not the earlier one's (DEPLOYMENT_ABORTED)."""
     serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
                                 outcome=outcome,
                                 lag=1, reuse_version=True)
@@ -474,91 +615,334 @@ def test_serving_update_that_reuses_the_config_version_settles_without_the_timeo
         with pytest.raises(RuntimeError, match=r"did not complete \(config update UPDATE_FAILED\): ep-2 "
                                                r"DEPLOYMENT_FAILED: Container failed to start: model load error\."):
             _run_deploy_cells(serving, clock=clock)
-    assert len(serving.updates) == 1 and clock.now <= 5 * 30, clock.now
+    assert len(serving.updates) == 1 and clock.now <= 5 * 30 and serving.event_reads == 0, clock.now
 
 
 FAR = 10 ** 12   # ms, about 30 years: Model Serving's event times far from the notebook's clock either way
 
 
-@pytest.mark.parametrize("event_offset_ms", [0, -FAR, FAR], ids=["same-clock", "events-far-past", "events-far-future"])
-def test_serving_update_that_reuses_the_config_version_and_fails_before_in_progress_fails_promptly(event_offset_ms):
-    """A reused config version whose update fails before any poll sees it IN_PROGRESS looks, in the
-    endpoint's state, like an earlier failure at that config. The endpoint's events tell them apart:
-    an "Endpoint update failed" event that was not there when the update was sent stops the task at
-    the first poll, with Model Serving's messages (it used to wait the whole 3000 s timeout), whatever
-    the events' timestamps say compared with the notebook's clock."""
-    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, outcome="fail", polls=0, reuse_version=True,
-                                event_offset_ms=event_offset_ms)
+@pytest.mark.parametrize("start_offset_ms", [0, -FAR, FAR], ids=["same-clock", "server-far-past", "server-far-future"])
+@pytest.mark.parametrize("leftover", [False, True], ids=["no-earlier-failure", "earlier-failure-at-the-same-config"])
+def test_serving_reused_config_version_failing_before_in_progress_fails_promptly_without_events(leftover, start_offset_ms):
+    """An update that keeps the config version number and fails before any poll sees it IN_PROGRESS,
+    with the endpoint's events unreadable, stops the task at the first poll with Model Serving's
+    message (it used to wait the whole 3000 s timeout). Even after an earlier failure at the very same
+    config (same version, same served entity, same message), the pending config is not the one left
+    before the update: here its start_time, Model Serving's own timestamp of when the update started,
+    differs. Only compared with that earlier value, never with the notebook's clock, and the wait
+    reads no events."""
+    endpoint = (_endpoint(4, "1", update="UPDATE_FAILED", pending=4, pending_served="2") if leftover
+                else _endpoint(4, "1"))
+    serving = _ServingEndpoints({"ep": endpoint}, outcome="fail", polls=0, reuse_version=True,
+                                start_offset_ms=start_offset_ms, events_error=ConnectionError("connection reset by peer"))
     clock = _Clock()
     clock.now = 1000.0
-    with pytest.raises(RuntimeError, match=r"^ep: the config update to cat\.sch\.bio_ecg12_arr v2 failed: Served "
-                                           r"entity creation aborted for served entity `ep-2`, config version 4, since "
-                                           r"the update timed out\. Endpoint update failed for endpoint `ep`, config "
-                                           r"version 4\. The endpoint keeps serving its previous config"):
+    with pytest.raises(RuntimeError, match=r"^ep: the config update to cat\.sch\.bio_ecg12_arr v2 did not complete "
+                                           r"\(config update UPDATE_FAILED\): ep-2 DEPLOYMENT_ABORTED: Served entity "
+                                           r"creation aborted for served entity `ep-2`, config version 4, since the "
+                                           r"update timed out\. The endpoint keeps serving its previous config"):
         _run_deploy_cells(serving, clock=clock)
     assert len(serving.updates) == 1 and serving.endpoints["ep"]["version"] == 4 and clock.now == 1000.0, clock.now
-    assert serving.endpoints["ep"]["update"] == "UPDATE_FAILED" and serving.gateways == []
+    assert serving.gateways == [] and serving.event_reads == 0
 
 
-# A failure event from an earlier attempt, already there before the update is sent.
-STALE = {"event_type": "ENDPOINT_UPDATE_EVENT", "timestamp": 400_000, "served_entity_name": None,
-         "message": "Endpoint update failed for endpoint `ep`, config version 5."}
-
-
-@pytest.mark.parametrize("stale_timestamp", [400_000, 1_000_000 + FAR], ids=["stale-before-clock", "stale-after-clock"])
-def test_serving_ignores_a_failed_update_event_from_before_the_update(stale_timestamp):
-    """An "Endpoint update failed" event from an earlier attempt (already among the events read just
-    before this update was sent) is not this update's failure, even when its timestamp is later than
-    the notebook's clock: with the earlier UPDATE_FAILED still showing right after the update call,
-    the wait goes on, and the new update completes."""
-    serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
-                                lag=1, reuse_version=True, events=[{**STALE, "timestamp": stale_timestamp}])
-    clock = _Clock()
-    clock.now = 1000.0                                  # the notebook's clock: 1,000,000 ms when the update is sent
-    out, _ = _run_deploy_cells(serving, clock=clock)
+@pytest.mark.parametrize("existing", [False, True], ids=["create", "update"])
+@pytest.mark.parametrize("early", ["lag", "idle"], ids=["not-registered-yet", "registered-not-started"])
+def test_serving_first_poll_before_in_progress_keeps_waiting(existing, early):
+    """The first poll after a create or an update can come before the endpoint shows it IN_PROGRESS:
+    the endpoint as it was (for a create: no config at all), or the new pending config with the state
+    still NOT_UPDATING. Neither is taken for the result: the wait goes on and the update completes
+    (a new endpoint used to stop the task at once with "did not complete")."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")} if existing else {}, **{early: 1})
+    out, clock = _run_deploy_cells(serving)
+    assert len(serving.updates if existing else serving.creates) == 1
     assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.endpoints["ep"]["update"] == "NOT_UPDATING"
-    assert serving.gateways == ["ep"] and clock.now > 1000.0 and "failed:" not in out
-    assert serving.event_reads >= 2                     # read before the send, and again while the stale state showed
+    assert serving.gateways == ["ep"] and "did not complete" not in out and clock.now > 0
 
 
-def test_serving_accepted_gap_a_stale_failure_event_delivered_late_fails_the_task():
-    """The accepted gap (deployment_path.update_failure): an earlier failure event missing from the
-    read before the send (delivered late) but present in the first read after it, while the earlier
-    UPDATE_FAILED still shows, is taken for this update's failure. The task stops with Model Serving's
-    message, a false failure to run again; it changes nothing the endpoint serves: the update was
-    sent once, nothing else is sent, and the AI Gateway step does not run."""
-    serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
-                                lag=1, reuse_version=True, late_events=[STALE])
-    with pytest.raises(RuntimeError, match=r"^ep: the config update to cat\.sch\.bio_ecg12_arr v2 failed: Endpoint "
-                                           r"update failed for endpoint `ep`, config version 5\."):
+def test_serving_new_endpoint_that_fails_stops_the_task_with_the_message():
+    """Regression guard (the code before the start_time change got this right too): a create that
+    ends UPDATE_FAILED is that create's failure, since there was no endpoint before."""
+    serving = _ServingEndpoints({}, outcome=("DEPLOYMENT_FAILED", "Container failed to start: model load error"))
+    with pytest.raises(RuntimeError, match=r"did not complete \(config update UPDATE_FAILED\): ep-2 DEPLOYMENT_FAILED: "
+                                           r"Container failed to start: model load error"):
         _run_deploy_cells(serving)
-    assert len(serving.updates) == 1 and serving.creates == [] and serving.gateways == [] and serving.event_reads == 2
+    assert len(serving.creates) == 1 and serving.gateways == []
 
 
-def test_serving_with_events_unreadable_before_the_update_judges_by_the_state_alone():
-    """The events read before the update fails: a note says the result is judged from the state alone,
-    and the events are not read again, so the stale failure event (readable later) is never taken
-    for this update's: the update completes."""
-    serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
-                                lag=1, reuse_version=True, events=[STALE],
-                                events_error=ConnectionError("connection reset by peer"), events_error_calls=1)
-    out, _ = _run_deploy_cells(serving)
-    assert "ep: events not readable (ConnectionError: connection reset by peer)" in out
-    assert "note: ep's events could not be read before the update, so its result is judged from the endpoint's state alone" in out
-    assert serving.endpoints["ep"]["update"] == "NOT_UPDATING" and serving.gateways == ["ep"] and serving.event_reads == 1
-
-
-def test_serving_update_failing_before_in_progress_with_unreadable_events_waits_for_the_timeout():
-    """Events that cannot be read do not break the wait: it goes on with the endpoint's state alone,
-    and the case the state cannot settle (a reused config version that fails before any poll sees it
-    IN_PROGRESS) then ends at the wait cell's timeout (3000 s), not before and not later."""
-    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, outcome="fail", polls=0, reuse_version=True,
-                                events_error=ConnectionError("connection reset by peer"))
+@pytest.mark.parametrize("start", ["missing", "identical"])
+def test_serving_failure_that_looks_like_the_earlier_one_stops_soon_with_a_clear_message(start):
+    """After an earlier failure at the very same config, an update that keeps the config version and
+    fails before any poll sees it IN_PROGRESS can leave a pending config identical to the earlier one:
+    no start_time from the API, or the same one. Nothing in the endpoint's state then says whether
+    the update failed or has not started, so the task neither claims a failure nor waits out the
+    3000 s timeout: once the endpoint has shown no progress and no result clearly its own for the
+    wait's limit for that (UNCLEAR_LIMIT_S), it stops with a message that says so and where to look."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=4, pending_served="2")},
+                                outcome="fail", polls=0, reuse_version=True,
+                                **({"start_times": False} if start == "missing" else {"start_time": 400_000}))
     clock = _Clock()
-    with pytest.raises(TimeoutError, match=r"^'ep' not ready after 3000s$"):
+    with pytest.raises(RuntimeError) as raised:
         _run_deploy_cells(serving, clock=clock)
-    assert len(serving.updates) == 1 and clock.now == 3000, clock.now
-    assert serving.endpoints["ep"]["update"] == "UPDATE_FAILED" and serving.gateways == []
+    message = str(raised.value)
+    assert message.startswith("ep: could not tell whether the config update to cat.sch.bio_ecg12_arr v2 has "
+                              "started or how it ended"), message
+    assert "databricks api get /api/2.0/serving-endpoints/ep/events" in message and "did not complete" not in message
+    limit = serving.namespace["UNCLEAR_LIMIT_S"]
+    assert limit <= 300 and limit <= clock.now <= limit + 30, clock.now
+    assert len(serving.updates) == 1 and serving.gateways == []
+
+
+def test_serving_reused_version_without_start_time_and_no_earlier_pending_config_fails_promptly():
+    """Without a start_time from the API but with no pending config left before the update, any
+    pending config after it is this update's: one that fails before any poll sees it IN_PROGRESS
+    stops the task at the first poll with Model Serving's message (it used to wait 3000 s)."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, outcome="fail", polls=0, reuse_version=True,
+                                start_times=False)
+    clock = _Clock()
+    with pytest.raises(RuntimeError, match=r"^ep: the config update to cat\.sch\.bio_ecg12_arr v2 did not complete "
+                                           r"\(config update UPDATE_FAILED\): ep-2 DEPLOYMENT_ABORTED: "):
+        _run_deploy_cells(serving, clock=clock)
+    assert len(serving.updates) == 1 and clock.now == 0, clock.now
+
+
+def test_serving_new_pending_config_with_the_earlier_failed_state_is_not_a_failure():
+    """A poll can show the update's new pending config (new start_time, its served model still being
+    created) while the endpoint's state still says the earlier UPDATE_FAILED. That is not this
+    update's failure: the wait goes on, and the update that then completes is reported as done."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
+                                stale=1)
+    out, _ = _run_deploy_cells(serving)
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.endpoints["ep"]["update"] == "NOT_UPDATING"
+    assert serving.gateways == ["ep"] and "did not complete" not in out
+
+
+@pytest.mark.parametrize("progress", ["in-progress", "registered-creating", "new-pending-with-stale-failed"])
+def test_serving_long_update_that_keeps_showing_progress_is_never_stopped_early(progress):
+    """Regression guard: an update that keeps showing progress for far longer than UNCLEAR_LIMIT_S
+    (25 polls, 12.5 minutes) is waited for and then completes at the target, with no early stop:
+    the endpoint IN_PROGRESS; this update's pending config with its served model being created while
+    the state says NOT_UPDATING; and that pending config next to the earlier UPDATE_FAILED."""
+    polls = 25
+    if progress == "new-pending-with-stale-failed":
+        serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
+                                    polls=0, stale=polls)
+    else:
+        serving = _ServingEndpoints({"ep": _endpoint(4, "1")},
+                                    **({"polls": polls} if progress == "in-progress" else {"polls": 0, "idle": polls}))
+    out, clock = _run_deploy_cells(serving)
+    assert clock.now >= polls * 30 > 2 * serving.namespace["UNCLEAR_LIMIT_S"], clock.now
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.endpoints["ep"]["update"] == "NOT_UPDATING"
+    assert serving.endpoints["ep"]["pending"] is None and serving.gateways == ["ep"] and len(serving.updates) == 1
+    assert "could not tell" not in out and "did not complete" not in out
+
+
+@pytest.mark.parametrize("state", ["DEPLOYMENT_RECOVERING", "DEPLOYMENT_READY"])
+@pytest.mark.parametrize("phase", ["registered-not-updating", "next-to-the-earlier-failed-state"])
+def test_serving_recovering_or_ready_served_model_of_this_update_is_progress(state, phase):
+    """This update's pending config whose served model is recovering, or already ready (traffic not
+    switched yet), is progress like one being created (ServedModelStateDeployment in databricks-sdk
+    0.122.0, serving.py): with the state still NOT_UPDATING, or next to the earlier UPDATE_FAILED,
+    for far longer than UNCLEAR_LIMIT_S, the wait goes on and the update completes."""
+    polls = 25
+    if phase == "registered-not-updating":
+        serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, idle=polls, progress_state=state)
+    else:
+        serving = _ServingEndpoints({"ep": _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")},
+                                    polls=0, stale=polls, progress_state=state)
+    out, clock = _run_deploy_cells(serving)
+    assert clock.now >= polls * 30 > 2 * serving.namespace["UNCLEAR_LIMIT_S"], clock.now
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.gateways == ["ep"]
+    assert "could not tell" not in out and "did not complete" not in out
+
+
+RIVAL = ("ep-3", config.uc_name(config.ARR_MODEL_NAME, "cat", "sch"), "3")
+
+
+@pytest.mark.parametrize("rival", ["in-progress", "failed", "completed"])
+def test_serving_another_writers_update_is_reported_as_such_not_as_this_ones(rival):
+    """Another writer's update (a pending config for a different model version than this update
+    sent) is not this update's: in progress, or failed, the task stops at once saying another update
+    is in progress on the endpoint, not that this update failed; completed (the endpoint now serves
+    the other version), the task stops saying another update replaced this one."""
+    outcome = {"in-progress": {"polls": 25}, "failed": {"polls": 0, "outcome": "fail"}, "completed": {"polls": 0}}[rival]
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, rival=RIVAL, **outcome)
+    clock = _Clock()
+    with pytest.raises(RuntimeError) as raised:
+        _run_deploy_cells(serving, clock=clock)
+    message = str(raised.value)
+    assert "another update" in message and "ep-3" in message and "cat.sch.bio_ecg12_arr v2" in message, message
+    if rival != "completed":
+        assert "is in progress" in message and "did not complete" not in message, message
+    assert clock.now == 0 and len(serving.updates) == 1 and serving.gateways == [], clock.now
+
+
+@pytest.mark.parametrize("field", ["entity_version", "entity_name", "name"])
+def test_serving_pending_config_with_an_incomplete_identity_is_not_another_writers(field):
+    """The SDK models a served entity's name, entity_name and entity_version as optional. A new pending
+    config whose served entity leaves one out is inconclusive, not another writer's: while the
+    endpoint shows the update IN_PROGRESS the wait goes on, and the update completes (before, a
+    missing entity_version compared as "None" and stopped the task as another writer's update)."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=3, missing=(field,))
+    out, _ = _run_deploy_cells(serving)
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.gateways == ["ep"]
+    assert "another update" not in out and "could not tell" not in out
+
+
+@pytest.mark.parametrize("field", ["entity_version", "entity_name", "name"])
+def test_serving_incomplete_identity_without_progress_stops_as_unclear(field):
+    """The same pending config with the endpoint NOT_UPDATING says nothing about whose update it is:
+    unclear, so after UNCLEAR_LIMIT_S the task stops saying it could not tell, never that another
+    update is in progress."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, idle=25, missing=(field,))
+    clock = _Clock()
+    with pytest.raises(RuntimeError, match=r"^ep: could not tell whether the config update"):
+        _run_deploy_cells(serving, clock=clock)
+    limit = serving.namespace["UNCLEAR_LIMIT_S"]
+    assert limit <= clock.now <= limit + 30, clock.now
+
+
+@pytest.mark.parametrize("field", ["entity_version", "entity_name", "name"])
+def test_serving_completed_config_with_an_incomplete_identity_is_waited_on_until_it_shows_the_target(field):
+    """The update completed (NOT_UPDATING, no pending config, a newer current config), but the first
+    poll's current config leaves out a served-entity field: that is not yet this update's success nor
+    a failure, so the wait goes on, and the next poll, which shows the target, completes it (before:
+    the task stopped with "did not complete")."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, current_missing=((field,), 1))
+    out, clock = _run_deploy_cells(serving)
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.gateways == ["ep"]
+    assert "did not complete" not in out and "another update" not in out and clock.now == 30, clock.now
+
+
+def test_serving_completed_config_whose_identity_never_resolves_stops_as_unclear():
+    """A newer current config that keeps leaving out entity_version never counts as done or failed:
+    after UNCLEAR_LIMIT_S the task stops saying it could not tell, never "did not complete"."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, current_missing=(("entity_version",), 25))
+    clock = _Clock()
+    with pytest.raises(RuntimeError) as raised:
+        _run_deploy_cells(serving, clock=clock)
+    message = str(raised.value)
+    assert message.startswith("ep: could not tell whether the config update") and "did not complete" not in message
+    limit = serving.namespace["UNCLEAR_LIMIT_S"]
+    assert limit <= clock.now <= limit + 30 and serving.gateways == [], clock.now
+
+
+# Every field of the Model Serving API the update wait reads, by where it reads it: the pending config
+# left before the update (its signature, read by deploy() and then seen again in later polls), the
+# update's new pending config (signature, served-entity identity, deployment state) and the newer
+# current config once the update completed (everything the at-target check compares).
+SIGNATURE = ["config_version", "start_time", "name", "entity_name", "entity_version"]
+WAIT_FIELDS = {
+    "baseline-at-read": SIGNATURE, "baseline-later": SIGNATURE, "baseline-current-at-read": ["config_version"],
+    "new-pending": [*SIGNATURE, "state"],
+    "current": ["config_version", "name", "entity_name", "entity_version", "workload_size", "scale_to_zero_enabled",
+                "traffic_config", "route.served_model_name", "route.traffic_percentage"],
+}
+
+
+def _missing_field_case(where, field, lasting):
+    """The stand-in for one field left out at one place: briefly (a later poll is whole) or lasting."""
+    if where == "current":
+        return _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, current_missing=((field,), 25 if lasting else 1))
+    if where == "baseline-current-at-read":
+        # deploy() reads the current config without its version; the polls after the send first show
+        # the unchanged old config, now with its version (the update not registered yet).
+        return _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=1, lag=25 if lasting else 2,
+                                 baseline_missing=((f"current.{field}",), "read"))
+    # An earlier failed update at the same target (served ep-2, aborted) left its pending config, and
+    # Model Serving keeps the config version number for the retry: only start_time tells them apart.
+    leftover = _endpoint(4, "1", update="UPDATE_FAILED", pending=5, pending_served="2")
+    if where == "new-pending":
+        options = {"progress_state": None} if field == "state" else {"missing": (field,)}
+        return _ServingEndpoints({"ep": leftover}, polls=1, idle=25 if lasting else 2, reuse_version=True, **options)
+    when = "read" if where == "baseline-at-read" else "later"
+    return _ServingEndpoints({"ep": leftover}, polls=1, reuse_version=True, baseline_missing=((field,), when),
+                             **({"idle": 25} if lasting and when == "read" else {"lag": 25 if lasting else 2}))
+
+
+def test_serving_unknown_baseline_version_and_the_old_config_seen_again_is_never_replaced():
+    """deploy() reads the existing endpoint's config without its version (left out by the API): that
+    baseline is unknown, not "no endpoint yet". The first poll after the send shows the old config
+    with its version (the update not registered yet): not another update's result. The update then
+    registers and completes: DONE (before, the unknown baseline became -1, the old config's version
+    counted as newer, and the task stopped saying another update replaced this one)."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=1, lag=1,
+                                baseline_missing=(("current.config_version",), "read"))
+    out, _ = _run_deploy_cells(serving)
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.gateways == ["ep"]
+    assert "another update" not in out and "did not complete" not in out
+
+
+@pytest.mark.parametrize("lasting", [False, True], ids=["later-poll-whole", "never-whole"])
+@pytest.mark.parametrize("where, field", [(where, field) for where, fields in WAIT_FIELDS.items() for field in fields])
+def test_serving_missing_api_fields_never_cause_a_false_failure(where, field, lasting):
+    """Missing data alone never makes the wait report a failure, another writer's update or "did not
+    complete": for each field the wait reads, left out where it reads it, the update completes once
+    a later poll is whole, and when none is, the task stops saying it could not tell. The one field
+    the ownership guard also reads before the update, the model name (entity_name) of the pending
+    config deploy() reads, stops the task before any update is sent, saying it could not tell which
+    model the endpoint serves (fail safe)."""
+    serving = _missing_field_case(where, field, lasting)
+    clock = _Clock()
+    try:
+        out, _ = _run_deploy_cells(serving, clock=clock)
+    except RuntimeError as error:
+        if (where, field) == ("baseline-at-read", "entity_name"):
+            assert "could not tell which model" in str(error) and serving.updates == [], str(error)
+            return
+        assert lasting and str(error).startswith("ep: could not tell whether the config update"), str(error)
+        assert serving.gateways == []
+        return
+    assert (where, field) != ("baseline-at-read", "entity_name"), "the ownership guard let an unknown model through"
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.gateways == ["ep"], out
+    assert "did not complete" not in out and "another update" not in out
+
+
+@pytest.mark.parametrize("missing", ["endpoint-state", "served-model-state"])
+def test_serving_missing_state_is_unclear_not_progress(missing):
+    """A poll with no endpoint state, or this update's pending config with no state for its served
+    model under NOT_UPDATING, says nothing about the update: it neither counts as progress (waiting
+    out the timeout) nor as a result; after UNCLEAR_LIMIT_S the task stops saying it could not tell."""
+    polls = 25
+    options = {"no_state": polls} if missing == "endpoint-state" else {"idle": polls, "progress_state": None}
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, **options)
+    clock = _Clock()
+    with pytest.raises(RuntimeError, match=r"^ep: could not tell whether the config update to cat\.sch\.bio_ecg12_arr v2"):
+        _run_deploy_cells(serving, clock=clock)
+    limit = serving.namespace["UNCLEAR_LIMIT_S"]
+    assert limit <= clock.now <= limit + 30 and serving.gateways == [], clock.now
+
+
+def test_serving_endpoint_state_missing_for_a_few_polls_then_completes():
+    """A few polls without an endpoint state, then the update's progress: the wait goes on and the
+    update completes."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, no_state=2)
+    out, _ = _run_deploy_cells(serving)
+    assert serving.endpoints["ep"]["entity"][0] == "ep-2" and serving.gateways == ["ep"] and "could not tell" not in out
+
+
+BOTH = ((config.ARR_MODEL_NAME, "ep"), (config.AFIB_MODEL_NAME, "ep2"))
+
+
+def test_serving_waits_for_both_endpoints_under_one_deadline_and_reports_an_early_failure_at_once():
+    """Both endpoints are polled together under one deadline: the second endpoint's update failing at
+    once stops the task at the first round with its message, while the first is still in progress
+    (a serial wait would have waited out the first one, 25 polls, before looking at the second)."""
+    serving = _ServingEndpoints({}, per={"ep": {"polls": 25},
+                                         "ep2": {"polls": 0, "outcome": ("DEPLOYMENT_FAILED", "model load error")}})
+    clock = _Clock()
+    with pytest.raises(RuntimeError, match=r"^ep2: the config update to .* did not complete .* model load error"):
+        _run_deploy_cells(serving, clock=clock, served=BOTH)
+    assert clock.now == 0 and serving.gateways == [] and [n for n, _ in serving.creates] == ["ep", "ep2"], clock.now
+
+
+def test_serving_two_updates_take_as_long_as_the_slower_one():
+    """Two updates of 10 polls each finish in about 10 polls, not 20, and each endpoint gets its AI
+    Gateway step once it is ready."""
+    serving = _ServingEndpoints({}, polls=10)
+    out, clock = _run_deploy_cells(serving, served=BOTH)
+    assert sorted(serving.gateways) == ["ep", "ep2"] and clock.now <= 12 * 30, clock.now
+    assert "did not complete" not in out
 
 
 def test_serving_update_rejected_by_the_api_fails_at_once():
@@ -593,34 +977,42 @@ def test_serving_new_champion_version_is_updated_and_a_new_endpoint_created():
     ((name, sent),) = serving.updates
     assert name == "ep" and sent["served_entities"][0]["entity_version"] == "2"
     assert serving.endpoints["ep"]["entity"][0] == "ep-2" and "updating ep -> " in out
+    updated = serving.namespace["deployed"]["ep"]           # deploy() returns a Deployment, by field name
+    assert (updated.full_name, updated.version, updated.target) == (config.uc_name(config.ARR_MODEL_NAME, "cat", "sch"),
+                                                                    "2", sent)
     serving = _ServingEndpoints({})
     _run_deploy_cells(serving)
     assert [n for n, _ in serving.creates] == ["ep"] and serving.updates == [] and serving.gateways == ["ep"]
 
 
-def test_serves_exactly_compares_every_field_deploy_sends():
-    """A different size, scale-to-zero, model, version, entity name, extra entity or split traffic
-    is not the champion config, so it is updated."""
+def test_target_match_compares_every_field_deploy_sends_and_never_takes_a_missing_one_for_a_value():
+    """target_match, the one at-target check: a different size, scale-to-zero, model, version,
+    entity name, extra entity or split traffic DIFFERS (so deploy() updates it, and the wait does not
+    take it for this update's success); every field left out (None) is MISSING, never a value."""
     serving = _ServingEndpoints({})
     namespace = {"EndpointStateConfigUpdate": _ConfigUpdate}
     (helpers,) = [c for c in _cells(WORKFLOW / "05_serve_endpoints.py") if "def wait_for_endpoint_ready(" in c]
     exec(compile(helpers, "05_serve_endpoints.py", "exec"), namespace)   # noqa: S102 (the repo's own notebook cell)
-    serves_exactly = namespace["serves_exactly"]
+    target_match, MATCH, MISSING, DIFFERS = (namespace[k] for k in ("target_match", "MATCH", "MISSING", "DIFFERS"))
     target = {"served_entities": [{"name": "ep-2", "entity_name": "c.s.m", "entity_version": "2",
                                    "workload_size": "Small", "scale_to_zero_enabled": True}],
               "traffic_config": {"routes": [{"served_model_name": "ep-2", "traffic_percentage": 100}]}}
-    good = serving._config(3, ("ep-2", "c.s.m", "2"))
-    assert serves_exactly(good, target) and not serves_exactly(None, target)
+    assert target_match(serving._config(3, ("ep-2", "c.s.m", "2")), target) == MATCH
+    assert target_match(None, target) == MISSING
     for field, value in (("workload_size", "Medium"), ("scale_to_zero_enabled", False), ("entity_name", "c.s.x"),
                          ("entity_version", "3"), ("name", "ep-3")):
         changed = serving._config(3, ("ep-2", "c.s.m", "2"))
         setattr(changed.served_entities[0], field, value)
-        assert not serves_exactly(changed, target), field
+        assert target_match(changed, target) == DIFFERS, field
+    for field in WAIT_FIELDS["current"][1:]:
+        missing = serving._config(3, ("ep-2", "c.s.m", "2"))
+        serving._drop(missing, field)
+        assert target_match(missing, target) == MISSING, field
     split = serving._config(3, ("ep-2", "c.s.m", "2"))
     split.traffic_config.routes[0].traffic_percentage = 50
     two = serving._config(3, ("ep-2", "c.s.m", "2"))
     two.served_entities.append(two.served_entities[0])
-    assert not serves_exactly(split, target) and not serves_exactly(two, target)
+    assert target_match(split, target) == DIFFERS and target_match(two, target) == DIFFERS
 
 
 def _deployment_path_cell():
@@ -638,10 +1030,12 @@ def test_serving_reports_each_endpoints_deployment_path_and_tags_it_before_the_s
     for call in ("w.serving_endpoints.build_logs(name=endpoint_name, served_model_name=entity.name).logs",
                  "events = read_events(endpoint_name)",
                  "found = deployment_path.classify(entity.name, build_log, events)", "print(found.line)",
-                 "add_tags=[EndpointTag(key=deployment_path.DEPLOYMENT_TAG, value=found.path)]"):
+                 "tag_endpoint(endpoint_name, deployment_path.DEPLOYMENT_TAG, found.path)"):
         assert call in cell, call
-    # One read of the events API in the notebook, in the helper the update wait uses too.
+    # One read of the events API in the notebook (read_events), used by this report only: the update
+    # wait judges from the endpoint's state.
     (helpers,) = [c for c in _cells(WORKFLOW / "05_serve_endpoints.py") if "def wait_for_endpoint_ready(" in c]
+    assert code.count("read_events(") == 2 and "events = read_events(endpoint_name)" in cell
     assert code.count("api_client.do(") == 1 and 'w.api_client.do("GET", events_api(name))' in helpers
     assert code.count("/api/2.0/serving-endpoints/{") == 1 and "deployment_path.events_of(response)" in helpers
     assert code.index("w.serving_endpoints.put_ai_gateway(") < code.index("deployment_path.classify(")
@@ -685,7 +1079,7 @@ def _run_tag_cells(stand_in, endpoints, remove_after=""):
     from common import deployment_path as dp
     cells = _cells(WORKFLOW / "05_serve_endpoints.py")
     (helpers,) = [c for c in cells if "def wait_for_endpoint_ready(" in c]
-    (remove_after_cell,) = [c for c in cells if 'key="removeAfter"' in c]
+    (remove_after_cell,) = [c for c in cells if '"removeAfter", remove_after)' in c]
     namespace = {"SERVED": tuple(("m", e) for e in endpoints), "deployment_path": dp, "w": stand_in,
                  "remove_after": remove_after, "EndpointStateConfigUpdate": _ConfigUpdate,
                  "EndpointTag": lambda key, value: SimpleNamespace(key=key, value=value)}
@@ -711,7 +1105,9 @@ def test_serving_warns_but_never_fails_on_a_path_other_than_express():
         logs={"a-1": EXPRESS_LOG, "b-1": "#18 0.382 Applying Databricks-managed pip constraints:",
               "c-1": RuntimeError("no build log")},
         events={"b": {"events": [{"event_type": dp.CONTAINER_EVENT, "served_entity_name": "b-1", "timestamp": 0,
-                                  "message": dp.IMAGE_STARTED}]},
+                                  "message": dp.IMAGE_STARTED},
+                                 {"event_type": dp.CONTAINER_EVENT, "served_entity_name": "b-1", "timestamp": 1,
+                                  "message": dp.IMAGE_DONE}]},
                 "c": RuntimeError("no events")})
     out = _run_tag_cells(stand_in, ("a", "b", "c"))
     assert stand_in.tags == {"a": {"deployment": "express"}, "b": {"deployment": "standard"},
@@ -774,19 +1170,43 @@ def test_serving_valid_events_with_none_for_the_entity_keep_express_from_the_bui
     assert stand_in.tags == {"a": {"deployment": "express"}} and "WARNING" not in out
 
 
-def test_serving_tag_and_query_errors_still_fail_the_task():
-    """Only reading the evidence is guarded: a failing tag call raises, and the smoke queries have no
-    error handling of their own."""
+@pytest.mark.parametrize("error", [PermissionError("PERMISSION_DENIED: cannot tag the endpoint"),
+                                   RuntimeError("INVALID_PARAMETER_VALUE: tag value not allowed by the tag policy")],
+                         ids=["permissions", "tag-policy"])
+def test_serving_tag_failures_only_warn_and_query_errors_still_fail_the_task(error):
+    """The `deployment` and removeAfter tags are informational: a tag call that fails (no permission,
+    a tag policy refusing the value) prints a warning with the error and the tag to add by hand, and
+    the task goes on (the removeAfter tag is still tried after a failed `deployment` tag). The smoke
+    queries have no error handling of their own, so a failing query still fails the task."""
     stand_in = _ServingStandIn(logs={"a-1": EXPRESS_LOG}, events={})
+    attempts = []
 
     def patch(name, add_tags):
-        raise PermissionError("cannot tag the endpoint")
+        attempts.append([t.key for t in add_tags])
+        raise error
 
     stand_in.serving_endpoints.patch = patch
-    with pytest.raises(PermissionError):
-        _run_tag_cells(stand_in, ("a",))
+    expiry = "2099-12-31"           # a stand-in date (test_repo_consistency.py: no real date committed)
+    out = _run_tag_cells(stand_in, ("a",), remove_after=expiry)
+    assert attempts == [["deployment"], ["removeAfter"]]
+    warnings = [line for line in out.splitlines() if line.startswith("WARNING: could not tag")]
+    assert len(warnings) == 2 and all(str(error) in w for w in warnings), out
+    assert "deployment=express" in warnings[0] and f"removeAfter={expiry}" in warnings[1]
+    assert "tagged" not in out.replace("could not tag", "")
     (smoke,) = [c for c in _cells(WORKFLOW / "05_serve_endpoints.py") if "deploy_client.predict(" in c]
     assert not {"try", "except"} & set(_code_tokens_of(smoke))
+
+
+@pytest.mark.parametrize("entities", [None, []], ids=["left-out", "empty"])
+def test_serving_deployment_path_of_an_endpoint_without_its_served_entity_is_unknown(entities):
+    """The deployment-path cell reads the endpoint's served entity; when the API leaves it out the
+    path is unknown with a warning, and the cell never raises (before: a ValueError or TypeError
+    unpacking it, after both endpoints were serving)."""
+    stand_in = _ServingStandIn(logs={}, events={})
+    stand_in.serving_endpoints.get = lambda name: SimpleNamespace(config=SimpleNamespace(served_entities=entities))
+    out = _run_tag_cells(stand_in, ("a",))
+    assert stand_in.tags == {"a": {"deployment": "unknown"}}
+    assert "WARNING: the deployment path of a could not be determined (the endpoint's config names no single served" in out
 
 
 def test_serving_keeps_both_endpoint_tags():
@@ -818,15 +1238,32 @@ def test_gate_logs_holdout_evaluation_artifacts_with_the_synthetic_caption():
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.name)
 def test_pip_installs_are_pinned(path):
-    """Every %pip install names exact versions (==) and never upgrades to whatever is latest."""
+    """Every %pip install names exact versions (==) and never upgrades to whatever is latest. The
+    only other index is PyTorch's CPU-only one, on a line of its own that installs torch alone, so
+    every other package still comes from the default index."""
     for line in path.read_text().splitlines():
         if not line.startswith("# MAGIC %pip install"):
             continue
         args = line.removeprefix("# MAGIC %pip install").split()
         flags = [a for a in args if a.startswith("-")]
         packages = [a.strip('"\'') for a in args if not a.startswith("-")]
-        assert set(flags) <= {"--no-deps"}, f"{path.name}: {line}"
+        assert set(flags) <= {"--no-deps", f"--index-url={TORCH_CPU_INDEX}"}, f"{path.name}: {line}"
         assert packages and all("==" in p for p in packages), f"{path.name}: {line}"
+        if f"--index-url={TORCH_CPU_INDEX}" in flags:
+            assert flags == [f"--index-url={TORCH_CPU_INDEX}"] and [p.split("==")[0] for p in packages] == ["torch"]
+
+
+def test_cpu_notebooks_install_the_cpu_build_of_torch():
+    """07_ / 08_ run on CPU serverless: torch comes from PyTorch's CPU-only index, on its own %pip
+    line, and mlflow-skinny from the default index; the training notebooks (GPU) install no torch."""
+    for name in ("07_arr_triage.py", "08_afib_classify.py"):
+        lines = pip_lines(WORKFLOW / name)
+        torch_lines = [line for line in lines if "torch==" in line]
+        assert torch_lines == [f'# MAGIC %pip install --index-url={TORCH_CPU_INDEX} "torch==2.11.0"'], name
+        assert '# MAGIC %pip install "mlflow-skinny==3.13.0"' in lines, name
+    for path in NOTEBOOKS:
+        if path.name not in ("07_arr_triage.py", "08_afib_classify.py"):
+            assert not [line for line in pip_lines(path) if "torch" in line], path.name
 
 
 def test_pip_lines_are_exactly_the_recorded_ones_and_run_before_any_code():

@@ -92,8 +92,10 @@ AFIB_MODEL_NAME = "bio_ecg12_afib"  # classify (flagged only): [p_not_afib, p_af
 #   05_ (standard environment 6 ships mlflow-skinny 3.12.0, the same databricks-sdk and protobuf):
 #       "mlflow-skinny==3.13.0", on a %pip line of its own after the ECG generator's
 #       --no-deps "neurokit2==0.2.12" "PyWavelets==1.4.1" (for its smoke-test ECGs, as in 01_ / 06_).
-#   07_ / 08_ (standard environment 6, which ships no torch): "mlflow-skinny==3.13.0" "torch==2.11.0",
-#       which add torch and move mlflow-skinny up, and change no other package the environment ships.
+#   07_ / 08_ (standard environment 6, which ships no torch): "mlflow-skinny==3.13.0", then
+#       "torch==2.11.0" on a line of its own from PyTorch's CPU-only index (the CPU build of the same
+#       version; PyPI's is the CUDA build), which add torch and move mlflow-skinny up, and change no
+#       other package the environment ships.
 MODEL_PIP_REQUIREMENTS = ["mlflow==3.13.0", "cloudpickle==3.1.1", "numpy==2.3.4", "pandas==2.3.3", "torch==2.11.0"]
 
 # --- Serving endpoints --------------------------------------------------------------------

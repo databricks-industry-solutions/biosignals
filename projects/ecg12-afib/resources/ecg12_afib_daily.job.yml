@@ -42,8 +42,9 @@ resources:
       # workspace's default version, which moves to new releases).
       environments:
         # Standard serverless environment 6, as SETUP's data generation and serving, for all three
-        # tasks. It ships no torch: the two scoring notebooks install the models' torch 2.11.0 and
-        # mlflow-skinny 3.13.0 (the ML environment 6 would bring torch 2.12.0, not the models' version).
+        # tasks. It ships no torch: the two scoring notebooks install the models' torch 2.11.0 (its CPU
+        # build, from PyTorch's CPU-only index) and mlflow-skinny 3.13.0 (the ML base environment of
+        # environment 6 would bring torch 2.12.0+cpu, not the models' version).
         - environment_key: standard_v6
           spec:
             environment_version: "6"

@@ -96,12 +96,15 @@ The demo creates billable resources (GPU training, two endpoints, the app). Step
 then open **Ubuntu** from the Start menu and choose a Linux user name and password. Install the
 tools below **inside Ubuntu**, following each page's **Linux** instructions. All later Option B
 commands are typed in the Ubuntu window. See [Install WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
+WSL is the Windows route we tested. Git Bash is untested: it turns command arguments that start
+with `/` (such as `/Workspace/...` or `/Users/...` paths) into Windows paths unless the variable
+`MSYS_NO_PATHCONV=1` is set ([Git for Windows known issues](https://github.com/git-for-windows/build-extra/blob/main/ReleaseNotes.md#known-issues)).
 
 Install each tool your option needs, using its official page (pick your operating system there):
 
 | Tool | Option | Install page |
 |---|---|---|
-| Databricks CLI (version 0.281.0 or later) | A, B | [Install or update the Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install) |
+| Databricks CLI (version 0.286.0 or later) | A, B | [Install or update the Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install) |
 | Git (downloads the code) | A, B | [git-scm.com/downloads](https://git-scm.com/downloads) |
 | jq (used by the deploy script) | B | [jqlang.org/download](https://jqlang.org/download/) |
 | Python 3 (used by the deploy script) | B | [python.org/downloads](https://www.python.org/downloads/) (Ubuntu already has it) |
@@ -125,7 +128,7 @@ System Settings > Privacy & Security.
 Close and reopen the terminal, then check:
 
 ```bash
-databricks --version     # 0.281.0 or later
+databricks --version     # 0.286.0 or later
 git --version
 # Option B also:
 jq --version
@@ -230,12 +233,18 @@ after `/dashboardsv3/`):
 
 ```bash
 databricks bundle summary -t no_app -p <profile> --var catalog=<catalog> --var warehouse_id=<warehouse-id> -o json | jq -r '.resources.dashboards.ecg12_afib_dashboard.id'
-databricks lakeview publish <dashboard-id> --warehouse-id <warehouse-id> --embed-credentials -p <profile>
+databricks lakeview publish <dashboard-id> --json '{"embed_credentials": true, "warehouse_id": "<warehouse-id>"}' -p <profile>
 ```
 
+In Windows PowerShell, put that JSON in a file first (as for `run.json` in step 6):
+`Set-Content publish.json '{"embed_credentials": true, "warehouse_id": "<warehouse-id>"}'`, then
+`databricks lakeview publish <dashboard-id> --json "@publish.json" -p <profile>`.
+
 Use the same `<profile>` you deployed with: viewers' queries run with the credentials of whoever
-publishes (leave out `--embed-credentials` if you set `embed_credentials` to `false`). Or open the dashboard in the workspace and click **Publish** (upper right), as the same
-person. Why, and what we saw in testing: Ask Genie in [the dashboard notes](dashboard.md).
+publishes. Write `"embed_credentials": false` if you set `embed_credentials` to `false`; keep it in
+the JSON either way, because the API's default for a missing `embed_credentials` is `true` (older
+CLIs left out `--embed-credentials=false`). Or open the dashboard in the workspace and click
+**Publish** (upper right), as the same person. Why, and what we saw in testing: Ask Genie in [the dashboard notes](dashboard.md).
 
 Other settings, all optional, are passed the same way (`--var schema=<name>`, ...); the full list
 is in Configuration in [deploy.md](deploy.md#configuration).
@@ -272,10 +281,10 @@ workspace comes from `-p <profile>`. `deploy.sh` (Option B) deploys the `full` t
 
 This one script checks the tools, builds the app, validates and plans (`bundle validate`, then
 `bundle plan`, which can stop before anything is deployed if this folder's saved state belongs to
-another workspace), deploys, runs SETUP (30–60 minutes) and DAILY, gives the app access to the
-endpoints, starts the app, and lets the dashboard show inside the app. With `--run-daily` it then
-publishes the dashboard once more, so its Ask Genie works; without it, the script prints the
-command to run once DAILY has run. It stops with a clear message at the first problem (a failed
+another workspace), deploys, runs SETUP (30–60 minutes) and DAILY, then publishes the dashboard
+once more, so its Ask Genie works (without `--run-daily` it prints the command to run once DAILY
+has run), then gives the app access to the endpoints, starts the app, and lets the dashboard show
+inside the app. It stops with a clear message at the first problem (a failed
 publish only warns) and ends with `Done. App: https://...`.
 
 - Not a workspace admin? Add `--skip-embed-allowlist`; the script then prints the one setting an
@@ -313,10 +322,10 @@ In the workspace, no commands needed:
   result and the "Not for clinical use" notice. A brand-new app can show "App Not Available" for a
   few minutes while its compute starts and its code is built; wait and reload the page.
 - **Live tiles**: the dashboard's live tiles fill in after the endpoints have had requests:
-  Databricks writes the request logs to the inference tables with a delay, and the docs say to expect
-  them within an hour of a request
-  ([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)). Refresh the
-  dashboard after that; until the first logs arrive the live tiles show an error, while the batch
+  Databricks writes the request logs to the inference tables with a delay. The docs say seconds for
+  CPU endpoints such as these
+  ([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints));
+  in our tests it took 20 to 60 minutes. Refresh the dashboard after that; until the first logs arrive the live tiles show an error, while the batch
   tiles work straight away.
 
 Job and dashboard names start with `[dev <your name>]`. That's expected: the demo deploys in
@@ -389,6 +398,7 @@ their own when not used.
 | `Unable to find dashboard [...]` from `bundle deploy`, in a folder deployed to another workspace before | Same cause and fix as the row above |
 | `This dashboard has been modified remotely since the last bundle deployment.` when redeploying | Only when redeploying a deployment whose dashboard was edited in the workspace UI. Option A: run the same `databricks bundle deploy ...` command with `--force` at the end. Option B: run `databricks bundle deploy -t full -p <profile> --var catalog=<catalog> --var warehouse_id=<warehouse-id> --force` (plus any other `--var` you deploy with), then `./deploy.sh` again. `--force` replaces the UI edits with the committed dashboard; to keep them, see [the dashboard notes](dashboard.md) |
 | Ask Genie says `Genie is unavailable due to incompatible SQL expressions in the dashboard` | The dashboard was published before the DAILY job created its tables. Run DAILY once if it has not run, then publish the dashboard again (step 5, Option A; [Ask Genie](dashboard.md)) |
+| `workspace_id ... in your configuration does not match the connected workspace` (from `bundle summary`; `deploy.sh` checks it in its first step, prerequisites, and stops there with this message) | Your profile in `~/.databrickscfg` has a wrong `workspace_id` line. Delete that line from the profile, or set it to the ID the message names, then run the command (or `./deploy.sh`) again |
 | A job task fails with a brief file or network error | Open the failed run in **Jobs & Pipelines** and re-run the failed task (repair the run) |
 | Dashboard doesn't show inside the app | A workspace admin adds the app's address under Settings > Security > Embed dashboards |
 

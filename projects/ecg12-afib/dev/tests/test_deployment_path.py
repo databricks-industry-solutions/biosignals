@@ -201,3 +201,55 @@ def test_a_build_event_that_names_no_served_entity_makes_the_path_unknown():
     # Events of other types that name no served entity do not count.
     other = {"event_type": "ENDPOINT_UPDATE_EVENT", "message": "Endpoint updated.", "timestamp": 1}
     assert dp.classify("ep-2", PREPARED_LOG, EXPRESS_EVENTS + [other]).path == dp.EXPRESS
+
+
+def test_without_config_versions_the_latest_attempt_by_start_time_counts():
+    """When no container event carries a config version, the timestamps order the attempts: the
+    latest start and the events from it on count. An older finished image build and a newer
+    finished express preparation (all unversioned) is express (before, unknown although the
+    timestamps make the order clear); a newer express start that has not finished is unknown, not
+    finished. Missing timestamps, or two kinds of build starting at the same time, leave the order
+    unclear: unknown."""
+    image = [_event("ep-2", dp.IMAGE_STARTED, ms("2026-01-01 00:00:00")),
+             _event("ep-2", dp.IMAGE_DONE, ms("2026-01-01 00:14:00"))]
+    express = [_event("ep-2", dp.EXPRESS_STARTED, ms("2026-01-01 01:00:00")),
+               _event("ep-2", dp.EXPRESS_DONE, ms("2026-01-01 01:04:00"))]
+    assert dp.classify("ep-2", PREPARED_LOG, image + express) == (
+        dp.EXPRESS, "ep-2: EXPRESS deployment (environment prepared in 4m00s; no container image build)", "")
+    assert dp.classify("ep-2", PREPARING_LOG, express[::-1] + image[::-1]).path == dp.EXPRESS     # any order
+    assert dp.classify("ep-2", PREPARED_LOG, image + express[:1]).reason == NOT_FINISHED["express"]
+    # The other way round, an image build after an express preparation is standard.
+    later_image = [{**e, "timestamp": e["timestamp"] + 2 * 3600 * 1000} for e in image]
+    assert dp.classify("ep-2", PREPARED_LOG, express + later_image).path == dp.STANDARD
+    reason = "its events hold an express preparation and a container image build whose order is unclear"
+    for events in (image + [{k: v for k, v in e.items() if k != "timestamp"} for e in express],
+                   image + [{**express[0], "timestamp": image[0]["timestamp"]}, express[1]]):     # same start
+        assert dp.classify("ep-2", PREPARED_LOG, events) == (
+            dp.UNKNOWN, f"ep-2: UNKNOWN deployment path ({reason})", reason), events
+
+
+def test_a_completion_counts_only_at_or_after_the_latest_start():
+    """A build's completion counts only when it comes at or after the latest start of that build: an
+    older completed express preparation and a newer start that has not finished is that newer
+    attempt, not finished (before, EXPRESS), with or without config versions; the same for a
+    container image build (before, STANDARD). A retry that finished is timed from its own start.
+    Done-only events (no start reported) still name the path, and so does one start with a
+    completion that has no usable timestamp; several starts with one are unclear: unknown."""
+    old = [_event("ep-2", dp.EXPRESS_STARTED, ms("2026-01-01 00:00:00")),
+           _event("ep-2", dp.EXPRESS_DONE, ms("2026-01-01 00:04:00"))]
+    newer = _event("ep-2", dp.EXPRESS_STARTED, ms("2026-01-01 01:00:00"))
+    for version in (None, 6):
+        events = [{**e, "config_version": version} if version else e for e in [*old, newer]]
+        assert dp.classify("ep-2", PREPARED_LOG, events).reason == NOT_FINISHED["express"], version
+    retry = [*old, newer, _event("ep-2", dp.EXPRESS_DONE, ms("2026-01-01 01:03:00"))]
+    assert dp.classify("ep-2", PREPARED_LOG, retry).line.endswith("(environment prepared in 3m00s; "
+                                                                  "no container image build)")
+    image_again = [*IMAGE_EVENTS, _event("ep-4", dp.IMAGE_STARTED, ms("2025-12-02 00:00:00"))]
+    assert dp.classify("ep-4", IMAGE_LOG, image_again).reason == NOT_FINISHED["image"]
+    assert dp.classify("ep-2", "", old[1:]).line == ("ep-2: EXPRESS deployment (environment prepared; "
+                                                     "no container image build)")          # done only
+    untimed_done = {k: v for k, v in old[1].items() if k != "timestamp"}
+    assert dp.classify("ep-2", "", [old[0], untimed_done]).path == dp.EXPRESS
+    reason = "its events hold several starts of one build and a completion whose order is unclear"
+    assert dp.classify("ep-2", "", [old[0], newer, untimed_done]) == (
+        dp.UNKNOWN, f"ep-2: UNKNOWN deployment path ({reason})", reason)

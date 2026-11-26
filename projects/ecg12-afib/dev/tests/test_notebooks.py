@@ -6,6 +6,7 @@ serving endpoint)."""
 import ast
 import contextlib
 import enum
+import fractions
 import io
 import re
 import subprocess
@@ -312,15 +313,17 @@ class _ServingEndpoints:
     still show it ("later"); "current.<field>" names a field of the current config instead (left
     out when deploy() reads it, given in later polls). A field is a config's (config_version, start_time, traffic_config), its
     route's ("route.<name>"), "state" (the served entity's deployment state) or its served entity's
-    (see _drop). The clock is _run_deploy_cells'."""
+    (see _drop). ``edited``: {field: value} set on the current config once the update has completed
+    (someone changed it in the Serving UI, say). The clock is _run_deploy_cells'."""
 
     def __init__(self, endpoints, outcome="succeed", polls=2, lag=0, reuse_version=False, reject=None,
                  events_error=None, idle=0, start_offset_ms=0, start_times=True, start_time=None, stale=0,
                  progress_state="DEPLOYMENT_CREATING", rival=None, no_state=0, per=None, missing=(),
-                 current_missing=((), 0), baseline_missing=((), None)):
+                 current_missing=((), 0), baseline_missing=((), None), edited=None):
         self.endpoints, self.outcome, self.polls, self.lag = endpoints, outcome, polls, lag
         self.progress_state, self.rival, self.no_state, self.per = progress_state, rival, no_state, per or {}
         self.missing, self.current_missing, self.baseline_missing = missing, current_missing, baseline_missing
+        self.edited = edited or {}
         self.idle, self.start_offset_ms, self.start_times = idle, start_offset_ms, start_times
         self.start_time, self.stale = start_time, stale
         self.reuse_version, self.reject = reuse_version, reject
@@ -343,16 +346,22 @@ class _ServingEndpoints:
                                                                    traffic_percentage=100)]))
 
     @staticmethod
+    def _set(endpoint_config, field, value):
+        """Set ``field`` of a config (see _drop) to ``value``."""
+        if field in ("config_version", "start_time", "traffic_config", "served_entities"):
+            setattr(endpoint_config, field, value)
+        elif field.startswith("route."):
+            setattr(endpoint_config.traffic_config.routes[0], field[len("route."):], value)
+        else:
+            setattr(endpoint_config.served_entities[0], field, value)
+
+    @staticmethod
     def _drop(endpoint_config, field):
         """Leave ``field`` out of a config (None, as the SDK gives a field the API did not return)."""
-        if field in ("config_version", "start_time", "traffic_config", "served_entities"):
-            setattr(endpoint_config, field, None)
-        elif field == "served_entities[]":                       # listed, but empty
+        if field == "served_entities[]":                         # listed, but empty
             endpoint_config.served_entities = []
-        elif field.startswith("route."):
-            setattr(endpoint_config.traffic_config.routes[0], field[len("route."):], None)
         else:
-            setattr(endpoint_config.served_entities[0], field, None)
+            _ServingEndpoints._set(endpoint_config, field, None)
 
     def get(self, name):
         self.gets += 1
@@ -391,6 +400,9 @@ class _ServingEndpoints:
             e["current_missing"] -= 1
             for field in self.current_missing[0]:
                 self._drop(current, field)
+        if snapshot is e and "before" in e and e.get("pending") is None:      # the update has completed
+            for field, value in self.edited.items():
+                self._set(current, field, value)
         pending = None
         if snapshot.get("pending"):
             version, entity, deployment, *custom = snapshot["pending"]
@@ -945,6 +957,56 @@ def test_serving_two_updates_take_as_long_as_the_slower_one():
     assert "did not complete" not in out
 
 
+@pytest.mark.parametrize("field, value, named", [
+    ("workload_size", "Medium", "workload_size Medium (submitted Small)"),
+    ("scale_to_zero_enabled", False, "scale_to_zero_enabled False (submitted True)"),
+    ("route.traffic_percentage", 50, "traffic ep-2 50% (submitted ep-2 100%)")])
+def test_serving_completed_config_with_other_settings_says_it_differs_not_that_the_update_failed(field, value, named):
+    """The update completed and the endpoint's current config serves this update's served entity
+    (name, model, version), but another setting differs from the config 05_ submitted (changed in
+    the Serving UI, say): the task stops saying the current config differs from the submitted one,
+    naming what differs, and that it may have been changed in the Serving UI; not that the update did
+    not complete and the endpoint keeps serving its previous config, which may be false."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, edited={field: value})
+    with pytest.raises(RuntimeError) as raised:
+        _run_deploy_cells(serving)
+    message = str(raised.value)
+    assert message.startswith("ep: the endpoint's current config serves cat.sch.bio_ecg12_arr v2, but differs from "
+                              "the config this run submitted: "), message
+    assert named in message and "may have been changed in the Serving UI" in message, message
+    assert "did not complete" not in message and "previous config" not in message, message
+    assert len(serving.updates) == 1 and serving.gateways == []
+
+
+@pytest.mark.parametrize("lasting", [False, True], ids=["later-poll-whole", "never-whole"])
+@pytest.mark.parametrize("missing", ["name", "entity_name", "entity_version"])
+@pytest.mark.parametrize("field, value", [("workload_size", "Medium"), ("scale_to_zero_enabled", False),
+                                          ("route.traffic_percentage", 50)])
+def test_serving_changed_settings_with_an_incomplete_identity_are_unclear_not_a_changed_config(
+        field, value, missing, lasting):
+    """A completed config with a changed setting whose served entity leaves out its name, model or
+    version is not known to serve this update's served entity: inconclusive (UNCLEAR), never the
+    definite "may have been changed in the Serving UI" message, nor "did not complete". The wait goes
+    on: once a poll shows the identity whole, the changed setting is reported as such; when none
+    does, the task stops at UNCLEAR_LIMIT_S saying it could not tell (before, the changed setting
+    outweighed the missing identity and the task stopped at the first poll as a changed config)."""
+    serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, polls=0, edited={field: value},
+                                current_missing=((missing,), 25 if lasting else 1))
+    clock = _Clock()
+    with pytest.raises(RuntimeError) as raised:
+        _run_deploy_cells(serving, clock=clock)
+    message = str(raised.value)
+    assert "did not complete" not in message and "previous config" not in message, message
+    if lasting:
+        assert message.startswith("ep: could not tell whether the config update"), message
+        assert "may have been changed in the Serving UI" not in message, message
+        limit = serving.namespace["UNCLEAR_LIMIT_S"]
+        assert limit <= clock.now <= limit + 30, clock.now
+    else:
+        assert "may have been changed in the Serving UI" in message and clock.now == 30, (message, clock.now)
+    assert serving.gateways == []
+
+
 def test_serving_update_rejected_by_the_api_fails_at_once():
     """An update_endpoint call Model Serving refuses raises straight away; nothing waits for it."""
     serving = _ServingEndpoints({"ep": _endpoint(4, "1")}, reject=RuntimeError("INVALID_PARAMETER_VALUE: refused"))
@@ -1260,7 +1322,7 @@ def test_cpu_notebooks_install_the_cpu_build_of_torch():
         lines = pip_lines(WORKFLOW / name)
         torch_lines = [line for line in lines if "torch==" in line]
         assert torch_lines == [f'# MAGIC %pip install --index-url={TORCH_CPU_INDEX} "torch==2.11.0"'], name
-        assert '# MAGIC %pip install "mlflow-skinny==3.13.0"' in lines, name
+        assert '# MAGIC %pip install "mlflow-skinny==3.18.0"' in lines, name
     for path in NOTEBOOKS:
         if path.name not in ("07_arr_triage.py", "08_afib_classify.py"):
             assert not [line for line in pip_lines(path) if "torch" in line], path.name
@@ -1308,11 +1370,12 @@ def test_model_pip_requirements_are_exact_plain_pypi_pins():
     reqs = config.MODEL_PIP_REQUIREMENTS
     assert all(re.fullmatch(r"[a-z0-9-]+==\d+(\.\d+)*", r) for r in reqs), reqs
     assert [r.split("==")[0] for r in reqs] == ["mlflow", "cloudpickle", "numpy", "pandas", "torch"]
-    # Locked literally: numpy, pandas, torch, cloudpickle and mlflow must equal the AI Runtime
-    # environment 6 versions the models are trained (and cloudpickled and logged) in (conftest.PREINSTALLED
-    # for mlflow-skinny and torch). A bump goes here, in config.py and, for mlflow and torch, in
+    # Locked literally: numpy, pandas, torch, cloudpickle and mlflow must equal the versions the models
+    # are trained (and cloudpickled and logged) with: AI Runtime environment 6's numpy, pandas, torch and
+    # cloudpickle (conftest.PREINSTALLED for torch and cloudpickle) and the mlflow-skinny the training
+    # notebooks' %pip line installs over it. A bump goes here, in config.py and, for mlflow and torch, in
     # PIP_LINES and the notebooks' %pip lines (test_repo_consistency.py checks each environment).
-    assert reqs == ["mlflow==3.13.0", "cloudpickle==3.1.1", "numpy==2.3.4", "pandas==2.3.3", "torch==2.11.0"]
+    assert reqs == ["mlflow==3.18.0", "cloudpickle==3.1.1", "numpy==2.3.4", "pandas==2.3.3", "torch==2.11.0"]
 
 
 def _model_cell(path):
@@ -1377,8 +1440,15 @@ _LOAD_AND_PREDICT = textwrap.dedent("""
     class PythonModel: pass
     mlflow.pyfunc.PythonModel = PythonModel
     sys.modules.update({"mlflow": mlflow, "mlflow.pyfunc": mlflow.pyfunc})
+    import torch
+    weights_only, real_load = [], torch.load
+    def load(*args, **kwargs):
+        weights_only.append(kwargs.get("weights_only"))
+        return real_load(*args, **kwargs)
+    torch.load = load
     model = pickle.loads(open(sys.argv[1], "rb").read())
     model.load_context(SimpleNamespace(artifacts={"state_dict": sys.argv[2]}))
+    print("torch", torch.__version__, "weights_only", weights_only)
     x = np.random.default_rng(0).normal(size=(3, 12, 2500)).astype("float32")
     out = model.predict(None, x)
     flat = model.predict(None, pd.DataFrame({"ecg": list(x.reshape(3, -1))}))
@@ -1387,12 +1457,16 @@ _LOAD_AND_PREDICT = textwrap.dedent("""
     else:
         print("array", np.asarray(out).shape, bool(np.allclose(np.asarray(out).sum(axis=1), 1.0)))
     print("flat_equal", bool(np.allclose(np.asarray(out), np.asarray(flat))))
-    import torch
     expected = "cuda" if torch.cuda.is_available() else "cpu"
     params = {p.device.type for p in model._model.parameters()}
     print("device_ok", model._device.type == expected and params == {expected})
     arrays = [out[c].to_numpy() for c in out.columns] if isinstance(out, pd.DataFrame) else [out]
     print("numpy_out", sorted({f"{type(a).__name__} {a.dtype}" for a in arrays}))
+    try:
+        model.load_context(SimpleNamespace(artifacts={"state_dict": sys.argv[3]}))
+        print("refuses_objects False")
+    except Exception as e:      # noqa: BLE001 (any other error is a failure the test reports)
+        print("refuses_objects", isinstance(e, pickle.UnpicklingError) and str(e).startswith("Weights only load failed"))
 """)
 
 
@@ -1414,6 +1488,8 @@ def test_inline_model_serves_without_common(name, tmp_path):
         cloudpickle.register_pickle_by_value(nb)
         state_dict = tmp_path / "state_dict.pt"
         torch.save(getattr(nb, cnn_name)().state_dict(), state_dict)
+        not_weights = tmp_path / "not_weights.pt"               # an object, not tensors: refused
+        torch.save({"weight": fractions.Fraction(1, 2)}, not_weights)
         pickled = tmp_path / "model.pkl"
         python_model = getattr(nb, pyfunc_name)()
         assert not hasattr(python_model, "_device")       # the device is picked at load time, never pickled
@@ -1422,9 +1498,14 @@ def test_inline_model_serves_without_common(name, tmp_path):
         sys.modules.pop(nb.__name__, None)
 
     # Fresh interpreter, cwd and sys.path without projects/ecg12-afib: `common` cannot be imported.
-    result = subprocess.run([sys.executable, "-I", "-c", _LOAD_AND_PREDICT, str(pickled), str(state_dict)],
+    result = subprocess.run([sys.executable, "-I", "-c", _LOAD_AND_PREDICT, str(pickled), str(state_dict),
+                             str(not_weights)],
                             capture_output=True, text=True, cwd=tmp_path, timeout=300, check=False)
     assert result.returncode == 0, result.stderr
+    # The weights load with weights_only=True (this torch's, the models' with run_tests_python311.sh),
+    # which refuses a file holding anything but tensors.
+    assert f"torch {torch.__version__} weights_only [True]" in result.stdout.splitlines()
+    assert "refuses_objects True" in result.stdout
     if pyfunc_name == "ArrModelPyfunc":
         assert "frame ['arr_prob', 'arr_flag'] (3, 2) [0.0, 1.0]" in result.stdout
     else:

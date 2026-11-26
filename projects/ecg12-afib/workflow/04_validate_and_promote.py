@@ -63,9 +63,19 @@
 # MAGIC > evaluation workflow working end to end; it says nothing about how the models would do on a hard,
 # MAGIC > real clinical problem. Every figure carries this caption.
 # MAGIC
-# MAGIC **Compute:** serverless GPU, AI v6 (torch 2.11.0). Nothing is installed: the environment ships
-# MAGIC mlflow-skinny 3.13.0, the version the models are logged with, and every other package as the
-# MAGIC training notebooks had it.
+# MAGIC **Compute:** serverless GPU, AI v6 (torch 2.11.0). The first code cell installs mlflow-skinny
+# MAGIC 3.18.0, the version the models are logged with, over the 3.13.0 the environment ships, as the
+# MAGIC training notebooks do; every other package is the environment's, as the training notebooks had it.
+
+# COMMAND ----------
+
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the version the models are logged with (this environment ships 3.13.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

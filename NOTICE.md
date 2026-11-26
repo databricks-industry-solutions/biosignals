@@ -26,3 +26,11 @@ license; today every project generates synthetic data.
   `SYNPT-000001`, ...), and each ECG in a batch is given a different one, drawn at random; record
   numbers (`SYN-MRN-...`) are random digits, fixed for each patient ID. Both are marked as
   synthetic. No names or addresses are generated.
+- **Request logs.** The two serving endpoints the SETUP job creates log every request and response
+  (the ECG signals sent for scoring and the predictions returned) to AI Gateway inference tables
+  in the deployer's own catalog and schema, named `<model>_payload` (`bio_ecg12_arr_payload` and
+  `bio_ecg12_afib_payload`). The same step turns on AI Gateway usage tracking, which records the
+  endpoints' usage in the workspace's `system.serving.endpoint_usage` table. With this project's
+  synthetic ECGs those tables hold synthetic data only. Anyone who adapts the project to real data
+  should treat the inference tables as holding that data too, and control access to them the same
+  way.

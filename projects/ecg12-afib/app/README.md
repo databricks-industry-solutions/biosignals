@@ -25,9 +25,10 @@ Built with [`apx`](https://github.com/databricks-solutions/apx) 0.3.8. `pyprojec
   and every `WARMUP_INTERVAL_S` while the page is visible (stopping while it is hidden), shows a
   status chip per endpoint, and gives Triage → Classify its own time limit, a Cancel button and
   Retry.
-- **Rate limits** (`backend/router.py`, `ANALYZE_LIMIT` / `WARMUP_LIMIT`). `/api/analyze` allows
-  10 requests per user and 60 from all users together in any 60 s; `/api/warmup` 12 and 60 in any
-  `WARMUP_INTERVAL_S`. A refused call gets a 429 with a `Retry-After` header and a message, before
+- **Rate limits** (`backend/router.py`, `ANALYZE_LIMIT` / `WARMUP_LIMIT` / `GENERATE_LIMIT`).
+  `/api/analyze` allows 10 requests per user and 60 from all users together in any 60 s;
+  `/api/warmup` 12 and 60 in any `WARMUP_INTERVAL_S`; `/api/generate` (no endpoint call, but an ECG
+  synthesized on the app's CPU) 30 and 120 in any 60 s. A refused call gets a 429 with a `Retry-After` header and a message, before
   any endpoint is queried. A user is the `X-Forwarded-User` header the Databricks Apps proxy sets
   (locally: the client address). When both endpoints answered a warm-up ping less than half of
   `WARMUP_INTERVAL_S` ago, `/api/warmup` answers from that ping without a new query and without

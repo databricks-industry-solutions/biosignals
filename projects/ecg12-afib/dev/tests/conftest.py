@@ -1,7 +1,10 @@
 """Shared test setup.
 
 * Puts projects/ecg12-afib on sys.path so tests import the same `common` package the notebooks use.
-* Selects matplotlib's non-interactive Agg backend, so the notebooks' plots render off-screen.
+* Selects ``notebook_display`` (this folder), matplotlib's Agg backend with ``plt.show()`` drawing
+  the figures, so the notebooks' plots render off-screen as in a notebook.
+* ``THIRD_PARTY_WARNINGS``: the dependency warnings the suite filters, each narrowed to its message
+  and the module that emits it.
 * ``spark``: a local Spark session for the tests that need one; skipped when only
   Databricks Connect (no local Spark) or no Java runtime is installed.
 * ``GOVERNED_TAG_VALUES``: the only values the notebooks may write for tag keys that a Unity
@@ -25,7 +28,29 @@ import pytest
 
 DEMO_ROOT = Path(__file__).resolve().parents[2]          # projects/ecg12-afib (this file: dev/tests/)
 sys.path.insert(0, str(DEMO_ROOT))
-os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("MPLBACKEND", "module://notebook_display")
+
+# Warnings from dependency code the suite cannot change, filtered by exact message and by the module
+# that emits them (never a module of this project). Each with the version it comes from:
+THIRD_PARTY_WARNINGS = [
+    # pyspark 3.5.3 checks the pandas version with distutils' LooseVersion on every pandas conversion;
+    # setuptools' distutils (81.0.0, required by torch 2.11.0) warns on each call.
+    # SETUPTOOLS_USE_DISTUTILS=stdlib is not the fix: setuptools deprecates it, and stdlib distutils warns too.
+    r"ignore:distutils Version classes are deprecated\. Use packaging\.version instead\.:DeprecationWarning:pyspark\.sql\.pandas\.utils$",
+    # pyspark 3.5.3 converts timestamps with pandas' is_datetime64tz_dtype, which pandas 2.2.3 deprecates
+    # (since 2.1.0).
+    r"ignore:is_datetime64tz_dtype is deprecated and will be removed in a future version\.:DeprecationWarning:pyspark\.sql\.pandas\.types$",
+    # matplotlib 3.10.0 calls pyparsing's camelCase names, which pyparsing 3.3.3 (matplotlib's
+    # unpinned dependency) deprecates.
+    r"ignore:'(oneOf|parseString|resetCache)' deprecated - use '(one_of|parse_string|reset_cache)':DeprecationWarning:matplotlib\._fontconfig_pattern$",
+    r"ignore:'enablePackrat' deprecated - use 'enable_packrat':DeprecationWarning:matplotlib\._mathtext$",
+]
+
+
+def pytest_configure(config):
+    for entry in THIRD_PARTY_WARNINGS:
+        config.addinivalue_line("filterwarnings", entry)
+
 
 # Tag keys the notebooks write that a Unity Catalog tag policy may restrict, with the only values the
 # notebooks may write for each. Under a tag policy Unity Catalog rejects any other value on a model
@@ -41,7 +66,7 @@ GOVERNED_TAG_VALUES = {"validation_status": frozenset({"valid", "invalid"})}
 # (PREINSTALLED below; test_repo_consistency.py fails on a pin below it). The models' mlflow and
 # torch versions are config.MODEL_PIP_REQUIREMENTS's.
 _GENERATOR_PIP = '# MAGIC %pip install --no-deps "neurokit2==0.2.12" "PyWavelets==1.4.1"'
-_MLFLOW_PIP = '# MAGIC %pip install "mlflow-skinny==3.13.0"'
+_MLFLOW_PIP = '# MAGIC %pip install "mlflow-skinny==3.18.0"'
 # PyTorch's CPU-only package index: torch==2.11.0 from PyPI is the CUDA build on Linux x86_64 and
 # pulls about 20 nvidia / CUDA packages and triton, which CPU serverless never uses.
 TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
@@ -49,9 +74,9 @@ _TORCH_CPU_PIP = f'# MAGIC %pip install --index-url={TORCH_CPU_INDEX} "torch==2.
 PIP_LINES = {
     "00_overview.py": [],
     "01_generate_training_data.py": [_GENERATOR_PIP],
-    "02_train_arr_model.py": [],                       # AI v6 ships mlflow-skinny 3.13.0 and torch
-    "03_train_afib_model.py": [],
-    "04_validate_and_promote.py": [],
+    "02_train_arr_model.py": [_MLFLOW_PIP],            # AI v6 ships mlflow-skinny 3.13.0 and torch
+    "03_train_afib_model.py": [_MLFLOW_PIP],
+    "04_validate_and_promote.py": [_MLFLOW_PIP],
     "05_serve_endpoints.py": [_GENERATOR_PIP, _MLFLOW_PIP],   # environment 6 ships mlflow-skinny 3.12.0
     "06_generate_batch_data.py": [_GENERATOR_PIP],
     "07_arr_triage.py": [_MLFLOW_PIP, _TORCH_CPU_PIP],   # environment 6: loads the models, ships no torch
@@ -59,8 +84,8 @@ PIP_LINES = {
 }
 
 # What each job environment (its spec in resources/*.job.yml) ships of every package a %pip line
-# names, None when it ships none. From the Databricks release notes and the package lists they
-# link (checked 2026-11-23):
+# names or MLFLOW_SKINNY_REQUIRES checks, None when it ships none. From the Databricks release notes and the package lists they
+# link (checked 2026-11-25):
 #   AI v6: https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/six-gpu
 #          (requirements-ai-gpu-6.txt; torch is the CUDA 13 build, 2.11.0+cu130)
 #   6:     https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/six
@@ -68,18 +93,20 @@ PIP_LINES = {
 #          versions have changed (databricks-sdk: 0.122.0 -> 0.102.0; protobuf: 6.33.5 -> 5.29.6)")
 PREINSTALLED = {
     ("base_environment", "workspace-base-environments/databricks_ai_v6"): {
-        "mlflow-skinny": "3.13.0", "databricks-sdk": "0.122.0", "protobuf": "6.33.5", "torch": "2.11.0",
-        "neurokit2": None, "PyWavelets": None},
+        "mlflow-skinny": "3.13.0", "databricks-sdk": "0.122.0", "protobuf": "6.33.5", "cloudpickle": "3.1.1",
+        "torch": "2.11.0", "neurokit2": None, "PyWavelets": None},
     ("environment_version", "6"): {
-        "mlflow-skinny": "3.12.0", "databricks-sdk": "0.122.0", "protobuf": "6.33.5", "torch": None,
-        "neurokit2": None, "PyWavelets": None},
+        "mlflow-skinny": "3.12.0", "databricks-sdk": "0.122.0", "protobuf": "6.33.5", "cloudpickle": "3.1.1",
+        "torch": None, "neurokit2": None, "PyWavelets": None},
 }
 
 # What each mlflow-skinny version a %pip line installs requires of the packages an environment
-# ships (Requires-Dist in the wheel's METADATA on PyPI, checked 2026-11-23). An environment whose
-# versions fall outside these makes pip move them, the way an older pin would.
+# ships that matter most here (Requires-Dist in the wheel's METADATA on PyPI, checked 2026-11-25):
+# databricks-sdk and protobuf, which stop the Python kernel when moved down, and cloudpickle, which
+# pickles the models.
+# An environment whose versions fall outside these makes pip move them, the way an older pin would.
 MLFLOW_SKINNY_REQUIRES = {
-    "3.13.0": {"databricks-sdk": ">=0.20.0,<1", "protobuf": ">=3.12.0,<8"},
+    "3.18.0": {"databricks-sdk": ">=0.20.0,<1", "protobuf": ">=3.12.0,<8", "cloudpickle": "<4"},
 }
 
 

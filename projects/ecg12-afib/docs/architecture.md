@@ -132,9 +132,9 @@ package-index entries in its pip requirements, CUDA-tagged versions, a Conda-onl
 PySpark (exact pins are required only for torch packages on a GPU endpoint; these endpoints are
 CPU). This project avoids all of those, though we have not tested which part of its setup express
 needed. The notebooks that log, load or serve the models
-run one MLflow version, 3.13 (it records the serverless environment version with the model): `02_`
-to `04_` get it with their environment (the AI Runtime environment 6, AI v6, ships it), and `05_`,
-`07_` and `08_` install it over the 3.12 that standard serverless environment 6 ships (`07_` and
+run one MLflow version, 3.18 (it records the serverless environment version with the model), and
+each installs it: `02_` to `04_` over the 3.13 that the AI Runtime environment 6 (AI v6) ships, and
+`05_`, `07_` and `08_` over the 3.12 that standard serverless environment 6 ships (`07_` and
 `08_` also install the models' torch 2.11.0, which environment 6 does not ship: its CPU build, on a
 `%pip` line of its own from PyTorch's CPU-only index, since PyPI's torch 2.11.0 for Linux is the CUDA
 build and brings about 20 nvidia / CUDA packages and triton a CPU task never uses; that index is in
@@ -158,7 +158,8 @@ events): it prints one line per endpoint, such as `bio_ecg12_arr-2: EXPRESS depl
 prepared in 4m00s; no container image build)`, and tags the endpoint `deployment` = `express`,
 `standard` or `unknown`. Only a finished build names the path: "Model artifact preparation
 completed successfully" for express, "Container image creation finished successfully" for standard;
-one that started and has not finished is `unknown`. An update that keeps a served model reuses its
+one that started and has not finished is `unknown`, also when an earlier attempt's build of the same
+kind finished (a completion counts only at or after the latest start). An update that keeps a served model reuses its
 prepared environment and adds no new events; its build log then still began "This environment was
 prepared ahead of time by express deployment" in our tests, which counts as express. `unknown`
 means the build log or the events could not be read (an API error, a timeout, an unexpected
@@ -169,8 +170,11 @@ which shows only in the events, wins, and an express build log without readable 
 `unknown`, not `express`.
 Each of those events carries the config version of its update, and only the served model's latest
 preparation or image build counts: an image built by an earlier, failed attempt does not make a
-later express preparation `standard`. When the events cannot say which came last (both kinds under
-one reused config version, or a config version on some events only), the path is `unknown`. Anything but `express` is a printed warning, not a failed
+later express preparation `standard`. When no event carries a config version, the timestamps
+decide: the latest start of a preparation or image build, and what follows it, counts. When the
+events cannot say which came last (both kinds under one reused config version, a config version on
+some events only, or, without config versions, a missing timestamp or two kinds of build starting
+at the same time), the path is `unknown`. Anything but `express` is a printed warning, not a failed
 task, because eligibility is Model Serving's decision and the endpoint serves either way.
 In the Serving UI the build log is under the endpoint's **Logs > Build logs** (pick the served
 model). Tested end to end on AWS and on Azure, with both endpoints on the express path; on Google

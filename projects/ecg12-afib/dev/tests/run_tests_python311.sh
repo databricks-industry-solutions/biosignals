@@ -6,10 +6,11 @@
 # bundled copy of cloudpickle (2.2.1), which predates cloudpickle's Python 3.12 support (3.0.0).
 # On Python 3.14 the local Spark tests fail with a RecursionError, so 3.12+ is not supported for
 # this suite.
-# Versions: pyspark 3.5.3 (local Spark); numpy 1.26.4 as the app pins it; torch 2.9.0, cloudpickle
-# 3.0.0, pandas 2.2.3 and matplotlib 3.10.0, the suite's own: the jobs run AI Runtime environment 6
-# and standard environment 6 (torch 2.11.0, cloudpickle 3.1.1, pandas 2.3.3), which this Python 3.11
-# environment does not reproduce.
+# Versions: pyspark 3.5.3 (local Spark); numpy 1.26.4 as the app pins it; torch 2.11.0 and
+# cloudpickle 3.1.1, the models' (config.MODEL_PIP_REQUIREMENTS, as AI Runtime environment 6 ships
+# them), so the pickle-and-load check runs the versions the models are pickled and loaded with;
+# pandas 2.2.3 and matplotlib 3.10.0, the suite's own. numpy and pandas differ from the models'
+# (numpy 2.3.4, pandas 2.3.3).
 #
 # Usage, from anywhere: dev/tests/run_tests_python311.sh [pytest arguments; default: dev/tests -q]
 # (pytest paths are relative to projects/ecg12-afib). See README.md in this folder.
@@ -20,6 +21,6 @@ if [[ $# -eq 0 ]]; then set -- dev/tests -q; fi
 exec uv run --no-project --isolated --python 3.11 \
   --with numpy==1.26.4 --with scipy==1.11.4 --with pandas==2.2.3 \
   --with neurokit2==0.2.12 --with PyWavelets==1.4.1 --with matplotlib==3.10.0 --with pyyaml==6.0.3 \
-  --with pytest==9.1.1 --with cloudpickle==3.0.0 --with torch==2.9.0 \
+  --with pytest==9.1.1 --with cloudpickle==3.1.1 --with torch==2.11.0 \
   --with pyspark==3.5.3 \
   python -B -m pytest -p no:cacheprovider "$@"

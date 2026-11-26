@@ -76,27 +76,31 @@ AFIB_MODEL_NAME = "bio_ecg12_afib"  # classify (flagged only): [p_not_afib, p_af
 # The pip environment a served model gets, passed to mlflow.pyfunc.log_model as pip_requirements=
 # instead of the list MLflow infers from the notebook session (which also picks up packages the
 # model never imports). Only what the pyfunc needs at serving time, each an exact version equal to
-# the training environment's (AI v6: Python 3.12.3, numpy 2.3.4, pandas 2.3.3, torch 2.11.0,
-# cloudpickle 3.1.1, mlflow-skinny 3.13.0, from the AI Runtime environment 6 release notes): the
+# the training notebooks' (AI v6: Python 3.12.3, numpy 2.3.4, pandas 2.3.3, torch 2.11.0,
+# cloudpickle 3.1.1, from the AI Runtime environment 6 release notes; mlflow 3.18.0, below): the
 # model classes are pickled there with cloudpickle and must unpickle with the same versions. Plain
 # PyPI pins only, nothing the docs list as preventing Model Serving's express deployment
 # (docs/express-deployment.md): no URL, index, editable or git entries, and no CUDA tag (torch
 # 2.11.0, not the environment's 2.11.0+cu130).
 # The mlflow version is the one every notebook that logs, loads or serves the models runs: MLflow
 # records the serverless environment version with the model, which Model Serving checks for express
-# deployment. Each notebook gets it in the way its environment allows, never by downgrading a
-# package the environment ships (dev/tests/test_notebooks.py and test_repo_consistency.py check the
-# %pip lines, which cannot read this file):
-#   02_ / 03_ / 04_ (AI v6 ships mlflow-skinny 3.13.0, databricks-sdk 0.122.0, protobuf 6.33.5 and
-#       torch 2.11.0): nothing.
-#   05_ (standard environment 6 ships mlflow-skinny 3.12.0, the same databricks-sdk and protobuf):
-#       "mlflow-skinny==3.13.0", on a %pip line of its own after the ECG generator's
-#       --no-deps "neurokit2==0.2.12" "PyWavelets==1.4.1" (for its smoke-test ECGs, as in 01_ / 06_).
-#   07_ / 08_ (standard environment 6, which ships no torch): "mlflow-skinny==3.13.0", then
+# deployment. It is 3.18.0, newer than either environment ships (the OSV vulnerability database lists
+# security advisories for mlflow 3.13.0 and none for 3.18.0, checked 2026-11-25), so each of those
+# notebooks installs "mlflow-skinny==3.18.0" on a %pip line of its own and restarts Python. That
+# moves only mlflow-skinny up: 3.18.0 accepts the databricks-sdk 0.122.0 and protobuf 6.33.5 both
+# environments ship (it requires >=0.20.0,<1 and >=3.12.0,<8) and changes no other package they
+# ship; on environment 6 it also adds python-multipart, which that environment does not ship. Never
+# downgrade a package an environment ships (dev/tests/test_notebooks.py and test_repo_consistency.py
+# check the %pip lines, which cannot read this file):
+#   02_ / 03_ / 04_ (AI v6 ships mlflow-skinny 3.13.0 and torch 2.11.0): "mlflow-skinny==3.18.0".
+#   05_ (standard environment 6 ships mlflow-skinny 3.12.0): "mlflow-skinny==3.18.0", after the ECG
+#       generator's --no-deps "neurokit2==0.2.12" "PyWavelets==1.4.1" (for its smoke-test ECGs, as
+#       in 01_ / 06_).
+#   07_ / 08_ (standard environment 6, which ships no torch): "mlflow-skinny==3.18.0", then
 #       "torch==2.11.0" on a line of its own from PyTorch's CPU-only index (the CPU build of the same
 #       version; PyPI's is the CUDA build), which add torch and move mlflow-skinny up, and change no
 #       other package the environment ships.
-MODEL_PIP_REQUIREMENTS = ["mlflow==3.13.0", "cloudpickle==3.1.1", "numpy==2.3.4", "pandas==2.3.3", "torch==2.11.0"]
+MODEL_PIP_REQUIREMENTS = ["mlflow==3.18.0", "cloudpickle==3.1.1", "numpy==2.3.4", "pandas==2.3.3", "torch==2.11.0"]
 
 # --- Serving endpoints --------------------------------------------------------------------
 # Endpoint names are workspace-wide, unlike the models and tables, so they are configurable:

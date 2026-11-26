@@ -23,7 +23,7 @@
 # MAGIC `05_`, see `docs/express-deployment.md`) does not apply here.
 # MAGIC
 # MAGIC **Compute:** standard serverless (CPU), **environment 6**. The first code cells install the
-# MAGIC models' versions: mlflow-skinny 3.13.0 (the environment ships 3.12.0) and torch 2.11.0 (the
+# MAGIC models' versions: mlflow-skinny 3.18.0 (the environment ships 3.12.0) and torch 2.11.0 (the
 # MAGIC environment ships no torch), and leave every other package (numpy, pandas, cloudpickle,
 # MAGIC databricks-sdk, protobuf) as the environment ships it, at the versions the models were trained
 # MAGIC with. torch comes from PyTorch's CPU-only package index, on its own `%pip` line: from PyPI, torch
@@ -34,8 +34,8 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Install mlflow-skinny 3.13.0, the models' version (this environment ships 3.12.0)
-# MAGIC %pip install "mlflow-skinny==3.13.0"
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the models' version (this environment ships 3.12.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
 
 # COMMAND ----------
 

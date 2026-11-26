@@ -49,13 +49,13 @@ resources:
       # against (dev/tests/test_repo_consistency.py) stay what the task runs on; a task without one
       # gets the workspace's default version, which moves to new releases.
       environments:
-        # Serverless GPU AI environment 6 (A10, torch 2.11.0 for CUDA 13, mlflow-skinny 3.13.0, the
-        # models' version) for the PyTorch training and gate tasks.
+        # Serverless GPU AI environment 6 (A10, torch 2.11.0 for CUDA 13) for the PyTorch training and
+        # gate tasks (they install mlflow-skinny 3.18.0, the models' version, over the 3.13.0 it ships).
         - environment_key: aiv6
           spec:
             base_environment: workspace-base-environments/databricks_ai_v6
         # Standard serverless environment 6 for the data generation and serving tasks (05_ installs
-        # mlflow-skinny 3.13.0 over the 3.12.0 it ships).
+        # mlflow-skinny 3.18.0 over the 3.12.0 it ships).
         - environment_key: standard_v6
           spec:
             environment_version: "6"

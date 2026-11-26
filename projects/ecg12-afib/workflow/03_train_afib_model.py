@@ -50,9 +50,20 @@
 # MAGIC
 # MAGIC Contract: input `(-1, 12, 2500)` float32; output `(-1, 2)` = `[p_not_afib, p_afib]` per row.
 # MAGIC
-# MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v6** (torch 2.11.0, CUDA 13). Nothing
-# MAGIC is installed: the environment ships mlflow-skinny 3.13.0, the version the model is logged with
-# MAGIC (`MODEL_PIP_REQUIREMENTS` in `common/config.py`), and every other package the notebook uses.
+# MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v6** (torch 2.11.0, CUDA 13). The
+# MAGIC first code cell installs mlflow-skinny 3.18.0, the version the model is logged with
+# MAGIC (`MODEL_PIP_REQUIREMENTS` in `common/config.py`), over the 3.13.0 the environment ships; every
+# MAGIC other package the notebook uses is the environment's, unchanged.
+
+# COMMAND ----------
+
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the version the model is logged with (this environment ships 3.13.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

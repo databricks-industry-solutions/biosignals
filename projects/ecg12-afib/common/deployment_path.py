@@ -18,13 +18,15 @@ reports them:
 
 Only a finished build names the path: "Container image creation finished successfully" for
 standard, "Model artifact preparation completed successfully" for express. A build that started and
-has not finished (still running, or it stopped) is unknown. An update that keeps a served entity
+has not finished (still running, or it stopped) is unknown, also when an earlier attempt's build of
+the same kind finished: a completion counts only at or after the latest start. An update that keeps a served entity
 (same name, new config version) reuses its environment and adds no container events; with no build
 in the events, the "prepared ahead of time by express deployment" line of the build log is express
 (the environment was prepared earlier), while "is preparing" is not finished, so unknown. Each
 container event carries the config version of its update, and only the entity's latest preparation
 or image build counts, so an image built by an earlier, failed attempt does not hide an express
-preparation after it. Both are needed. We assume (no Databricks page says so) that express which
+preparation after it; when no event carries a config version, the latest start by timestamp
+decides which build is the latest. Both are needed. We assume (no Databricks page says so) that express which
 falls back to an image build may still have written an express line to the build log first, so a
 finished image build in the events wins over the build log, and when either could not be read the
 path is unknown, never express from the build log alone.
@@ -75,11 +77,15 @@ def _minutes(seconds: float) -> str:
     return f"{seconds // 60}m{seconds % 60:02d}s"
 
 
+def _timed(event: Mapping[str, Any]) -> bool:
+    """Whether an event has a usable timestamp (epoch milliseconds, a number)."""
+    return isinstance(event.get("timestamp"), (int, float))
+
+
 def _took(events: Sequence[Mapping[str, Any]], started: str, done: str) -> float | None:
     """Seconds from the last ``started`` event to the first ``done`` event after it, or None."""
     def times(message):
-        return [e["timestamp"] for e in events if e.get("message") == message
-                and isinstance(e.get("timestamp"), (int, float))]
+        return [e["timestamp"] for e in events if e.get("message") == message and _timed(e)]
 
     starts = times(started)
     if not starts:
@@ -102,28 +108,52 @@ def _latest_build(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]
 
     Each event carries the config version of the update it belongs to (seen live), and a later build
     replaces an earlier one: an image built by an earlier, failed attempt does not describe an express
-    preparation after it. So the events of the latest config version that has any count; when no
-    event carries a config version, all of them. Express and image events can still meet in the
-    events that count: one attempt where express falls back (its express events all before its image
-    build, by Model Serving's timestamps) is a build of the image; anything else (an express event
-    after an image event, missing timestamps, or both kinds where only some events carry a config
+    preparation after it. So the events of the latest config version that has any count. When no
+    event carries a config version and both kinds are there, Model Serving's timestamps order the
+    attempts instead: the latest start (of either kind) and the events from it on count; with no
+    start, all of them. Express and image events can still meet in the events that count: one
+    attempt where express falls back (its express events all before its image build) is a build of
+    the image; anything else (an express event after an image event, missing timestamps, two kinds
+    of build starting at the same time, or both kinds where only some events carry a config
     version, so an unversioned one cannot be placed) is two attempts in an order the events do not
     establish: None."""
+    image, express = [e for e in events if _is_image(e)], [e for e in events if _is_express(e)]
     versions = [e["config_version"] for e in events if isinstance(e.get("config_version"), int)]
     if versions:
         unplaced = [e for e in events if not isinstance(e.get("config_version"), int)]
         latest = [e for e in events if e.get("config_version") == max(versions)]
-        if unplaced and (any(map(_is_image, events)) and any(map(_is_express, events))):
+        if unplaced and image and express:
             return None
     else:
         latest = list(events)
+        starts = [e for e in image + express if e.get("message") in (IMAGE_STARTED, EXPRESS_STARTED)]
+        if image and express and starts:
+            if not all(map(_timed, image + express)):
+                return None
+            last = max(e["timestamp"] for e in starts)
+            if len({e["message"] for e in starts if e["timestamp"] == last}) > 1:
+                return None
+            latest = [e for e in latest if not _timed(e) or e["timestamp"] >= last]
     image, express = [e for e in latest if _is_image(e)], [e for e in latest if _is_express(e)]
-    if image and express:
-        times = [e.get("timestamp") for e in image + express]
-        if not all(isinstance(t, (int, float)) for t in times) or (
-                max(e["timestamp"] for e in express) >= min(e["timestamp"] for e in image)):
-            return None
+    if image and express and (not all(map(_timed, image + express)) or (
+            max(e["timestamp"] for e in express) >= min(e["timestamp"] for e in image))):
+        return None
     return latest
+
+
+def _finished(events: Sequence[Mapping[str, Any]], started: str, done: str) -> bool | None:
+    """Whether the latest ``started`` build of ``events`` finished: a ``done`` event at or after the
+    latest ``started`` one, by timestamp, so a completion of an earlier attempt does not finish a
+    later start. With no ``started`` event, any ``done`` (done-only events); with one, also a ``done``
+    without a usable timestamp (it can only be that start's). None when it cannot be said: several
+    starts and a ``done`` that cannot be placed among them."""
+    starts = [e for e in events if e.get("message") == started]
+    dones = [e for e in events if e.get("message") == done]
+    if not dones or not starts:
+        return bool(dones)
+    if all(map(_timed, starts + dones)):
+        return any(e["timestamp"] >= max(s["timestamp"] for s in starts) for e in dones)
+    return True if len(starts) == 1 else None
 
 
 def classify(served_entity: str, build_log: str | None,
@@ -135,7 +165,8 @@ def classify(served_entity: str, build_log: str | None,
     the latest build counts, and only a finished one names the path: a finished container image build
     is standard (it wins over the express signals, on the assumption that express which falls back
     may already have written an express build-log line), a completed preparation is express, one
-    that started and has not finished is unknown. With no build in the events, the build log's
+    that started and has not finished is unknown. A completion counts only at or after the latest
+    start of its kind (``_finished``): an earlier attempt's does not finish a later start. With no build in the events, the build log's
     "prepared ahead of time by express deployment" line is express (an environment prepared earlier
     and reused); "is preparing" is not finished, so unknown."""
     def unknown(reason, line=None):
@@ -154,13 +185,17 @@ def classify(served_entity: str, build_log: str | None,
     if mine is None:
         return unknown("its events hold an express preparation and a container image build whose order is unclear")
     messages = {e.get("message") for e in mine}
-    if IMAGE_DONE in messages:
+    image_done = _finished(mine, IMAGE_STARTED, IMAGE_DONE)
+    express_done = _finished(mine, EXPRESS_STARTED, EXPRESS_DONE)
+    if image_done is None or express_done is None:
+        return unknown("its events hold several starts of one build and a completion whose order is unclear")
+    if image_done:
         took = _took(mine, IMAGE_STARTED, IMAGE_DONE)
         detail = f"container image built in {_minutes(took)}" if took is not None else "container image built"
         return DeploymentPath(STANDARD, f"{served_entity}: STANDARD deployment ({detail}; not express)")
     if IMAGE_STARTED in messages:
         return unknown("a container image build started and has not finished (still running, or it failed)")
-    if EXPRESS_DONE in messages:
+    if express_done:
         took = _took(mine, EXPRESS_STARTED, EXPRESS_DONE)
         detail = f"environment prepared in {_minutes(took)}" if took is not None else "environment prepared"
         return DeploymentPath(EXPRESS, f"{served_entity}: EXPRESS deployment ({detail}; no container image build)")

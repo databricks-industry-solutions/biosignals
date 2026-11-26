@@ -32,7 +32,9 @@
 # MAGIC pending config that definitely serves something else than this run sent (a served-entity name,
 # MAGIC model or version that is there and differs) is another writer's, and the task stops saying
 # MAGIC another update is in progress (or replaced this one), instead of reporting that update's result
-# MAGIC as its own. Any field the API leaves out (in a pending config or in the current config) is
+# MAGIC as its own; a completed config that serves this run's model version with other settings (size,
+# MAGIC scale-to-zero, traffic) stops it saying what differs and that it may have been changed in the
+# MAGIC Serving UI. Any field the API leaves out (in a pending config or in the current config) is
 # MAGIC missing, never a value: missing data alone never stops the task as a failure, another writer's
 # MAGIC update or "did not complete"; the wait counts it as unclear until a poll shows it whole. Both
 # MAGIC endpoints are waited for together, under one deadline, so a failure on either stops the task as
@@ -100,21 +102,22 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Why this notebook installs mlflow-skinny 3.13.0 and no SDK
+# DBTITLE 1,Why this notebook installs mlflow-skinny 3.18.0 and no SDK
 # MAGIC %md
 # MAGIC This task runs on standard serverless **environment 6** (the SETUP job names it, so it does not move
 # MAGIC with the workspace default). Environment 6 ships `mlflow-skinny` 3.12.0, `databricks-sdk` 0.122.0
 # MAGIC and `protobuf` 6.33.5. The notebook installs the ECG generator's two packages and moves
-# MAGIC `mlflow-skinny` up to 3.13.0, the version the models are logged with (`MODEL_PIP_REQUIREMENTS`
-# MAGIC in `common/config.py`); 3.13.0 accepts the environment's SDK and protobuf (it requires
-# MAGIC `databricks-sdk` >=0.20.0,<1 and `protobuf` >=3.12.0,<8), so pip changes no other package. Pinning
+# MAGIC `mlflow-skinny` up to 3.18.0, the version the models are logged with (`MODEL_PIP_REQUIREMENTS`
+# MAGIC in `common/config.py`); 3.18.0 accepts the environment's SDK and protobuf (it requires
+# MAGIC `databricks-sdk` >=0.20.0,<1 and `protobuf` >=3.12.0,<8), so pip changes no other package the
+# MAGIC environment ships (it adds `python-multipart`, which the environment does not ship). Pinning
 # MAGIC older SDK or protobuf versions here would downgrade core packages the Python kernel itself uses,
 # MAGIC and the kernel does not come back after the restart. Express deployment does not depend on
 # MAGIC this notebook: Model Serving decides it from what `02_` / `03_` recorded when they logged the models.
 # MAGIC Source: the [serverless environment 6](https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/six)
-# MAGIC release notes and their package list (checked 2026-11-23). The `mlflow.deployments` module is
-# MAGIC the same in mlflow-skinny 3.12.0 and 3.13.0, and these versions provide every API this notebook
-# MAGIC calls: `mlflow.deployments` (create / update / list / predict), `MlflowClient.get_model_version_by_alias`,
+# MAGIC release notes and their package list (checked 2026-11-25). The `mlflow.deployments` module is
+# MAGIC the same in mlflow-skinny 3.12.0, 3.13.0 and 3.18.0, and these versions provide every API this
+# MAGIC notebook calls: `mlflow.deployments` (create / update / list / predict), `MlflowClient.get_model_version_by_alias`,
 # MAGIC and the SDK's `serving_endpoints.get`, `put_ai_gateway(inference_table_config=...,
 # MAGIC usage_tracking_config=...)` and `patch(add_tags=[EndpointTag(...)])`.
 
@@ -125,8 +128,8 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Install mlflow-skinny 3.13.0, the version the models are logged with (this environment ships 3.12.0)
-# MAGIC %pip install "mlflow-skinny==3.13.0"
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the version the models are logged with (this environment ships 3.12.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
 
 # COMMAND ----------
 
@@ -263,8 +266,11 @@ def pending_signature(pending):
 # at the target (target_match MATCH) is this update's success (DONE). Otherwise it counts only when
 # it is another config than before the send (config_changed: its version compared with the one
 # deploy() read; any config after a create): then another update's when its identity differs
-# (REPLACED), a result that is not the target when another field differs (FAILED). Anything missing
-# (including a version deploy() could not read: unknown, not "no endpoint yet") is unclear.
+# (REPLACED), a result that is not the target when its identity matches and another field differs
+# (DIFFERENT: the config serves this update's served entity with other settings, perhaps changed in
+# the Serving UI; not a failed update, so the message does not say the previous config keeps
+# serving). Anything missing (including a version deploy() could not read: unknown, not "no
+# endpoint yet", and an identity left out next to a changed setting) is unclear.
 # A failed state counts as this update's failure (FAILED) only when the pending config is this
 # update's and every one of its served entities ended DEPLOYMENT_FAILED or DEPLOYMENT_ABORTED. While
 # this update's served entity is being created, recovering, or ready with the traffic not switched
@@ -287,7 +293,7 @@ UNCLEAR_LIMIT_S = 300
 # Verdicts of a poll. SETTLED: the endpoint's config update is no longer in progress (deploy()'s wait
 # before it sends anything); the others judge a sent update (update_verdict).
 SETTLED, DONE, FAILED, REPLACED = "settled", "done", "failed", "replaced"
-WAITING, UNCLEAR, OTHER = "waiting", "unclear", "other"
+WAITING, UNCLEAR, OTHER, DIFFERENT = "waiting", "unclear", "other", "different"
 # Deployment states (ServedModelStateDeployment) of this update's served entity that mean progress.
 PROGRESS_STATES = ("DEPLOYMENT_CREATING", "DEPLOYMENT_RECOVERING", "DEPLOYMENT_READY")
 MATCH, MISSING, DIFFERS = "match", "missing", "differs"
@@ -337,21 +343,46 @@ def identity(endpoint_config, target):
                          lambda want, e: combine(compare(want[key], getattr(e, key, None)) for key in IDENTITY))
 
 
+def routes_of(endpoint_config):
+    """A config's traffic routes, None when the API left them out."""
+    traffic = endpoint_config.traffic_config
+    return traffic.routes if traffic is not None else None
+
+
+def compare_route(want, route):
+    """One route of ``target`` (served model name, traffic percentage) and one of a config."""
+    return combine([compare(want["served_model_name"], route.served_model_name or route.served_entity_name),
+                    compare(want["traffic_percentage"], route.traffic_percentage)])
+
+
 def target_match(endpoint_config, target):
     """Whether a config (current or pending) is exactly ``target``: every field deploy() sends for its
     one served entity (name, model, version, size, scale-to-zero), and one route sending that entity
     all traffic. MATCH, DIFFERS or MISSING."""
     if endpoint_config is None:
         return MISSING
-    traffic = endpoint_config.traffic_config
     return combine([
         compare_items(target["served_entities"], endpoint_config.served_entities,
                       lambda want, e: combine(compare(value, getattr(e, key, None)) for key, value in want.items())),
-        compare_items(target["traffic_config"]["routes"], traffic.routes if traffic is not None else None,
-                      lambda want, route: combine([
-                          compare(want["served_model_name"], route.served_model_name or route.served_entity_name),
-                          compare(want["traffic_percentage"], route.traffic_percentage)])),
+        compare_items(target["traffic_config"]["routes"], routes_of(endpoint_config), compare_route),
     ])
+
+
+def differences(endpoint_config, target):
+    """What differs between a config whose served entities are ``target``'s (identity MATCH) and
+    ``target``, for a message: each served-entity field as '<field> <now> (submitted <sent>)', and the
+    traffic as 'traffic <route> <percent>%, ... (submitted ...)' when a route differs."""
+    found = [f"{key} {getattr(e, key, None)} (submitted {value})"
+             for want, e in zip(target["served_entities"], endpoint_config.served_entities or [])
+             for key, value in want.items() if compare(value, getattr(e, key, None)) == DIFFERS]
+    sent, routes = target["traffic_config"]["routes"], routes_of(endpoint_config)
+    if compare_items(sent, routes, compare_route) == DIFFERS:
+        def traffic(pairs):
+            return ", ".join(f"{name} {percent}%" for name, percent in pairs)
+        now = traffic((r.served_model_name or r.served_entity_name, r.traffic_percentage) for r in routes)
+        submitted = traffic((r["served_model_name"], r["traffic_percentage"]) for r in sent)
+        found.append(f"traffic {now} (submitted {submitted})")
+    return "; ".join(found)
 
 
 def config_changed(sent, ep):
@@ -372,10 +403,12 @@ def describe(endpoint_config):
 def update_verdict(ep, sent):
     """After deploy() sent an update or a create, or found the endpoint at the target (``sent``, its
     Deployment), what a poll says (see the comment above): DONE (at the target), FAILED (this
-    update's failure, or a changed config that definitely is not the target), REPLACED (a changed
-    config for something else), OTHER (another writer's update pending), WAITING (in progress, or this
-    update's pending config with its served model in a PROGRESS_STATES state) or UNCLEAR (no endpoint
-    state, nothing that tells this update's state apart from the one before, or data missing)."""
+    update's failure), DIFFERENT (a changed config whose identity MATCHes this update's served
+    entity and that definitely is not the target: another setting differs), REPLACED (a changed
+    config for something else), OTHER (another writer's update pending), WAITING (in progress, or
+    this update's pending config with its served model in a PROGRESS_STATES state) or UNCLEAR (no
+    endpoint state, nothing that tells this update's state apart from the one before, or data
+    missing, including a changed config whose identity is MISSING)."""
     pending = ep.pending_config
     attempt = new_attempt(sent.before_pending, pending) if pending is not None else None
     who = identity(pending, sent.target) if pending is not None else None
@@ -395,7 +428,9 @@ def update_verdict(ep, sent):
                 return DONE
             if current == MISSING or config_changed(sent, ep) != DIFFERS:
                 return UNCLEAR              # data missing, or the config from before (not registered yet)
-            return REPLACED if identity(ep.config, sent.target) == DIFFERS else FAILED
+            # Only a whole identity places the config: MISSING (a served-entity name, model or
+            # version left out) is not known to be this update's, whatever setting differs.
+            return {DIFFERS: REPLACED, MATCH: DIFFERENT}.get(identity(ep.config, sent.target), UNCLEAR)
         return WAITING if progressing else UNCLEAR
     if ours and entity_states(pending) and all(
             state in ("DEPLOYMENT_FAILED", "DEPLOYMENT_ABORTED") for state in entity_states(pending)):
@@ -445,7 +480,7 @@ def wait_for_endpoints(sent_by_name, timeout=2400, poll=30):
     None (deploy(), before it sends anything) the result is SETTLED: state.config_update is no longer
     IN_PROGRESS. A failed update leaves its pending_config behind, so pending_config is not a sign of
     an update in progress. With a Deployment only that update's result counts (update_verdict: DONE,
-    FAILED or REPLACED, for the caller to act on); another writer's update stops the task at once, and an unclear state (one that cannot be told
+    FAILED, DIFFERENT or REPLACED, for the caller to act on); another writer's update stops the task at once, and an unclear state (one that cannot be told
     apart from the one before the send, or an incomplete one) stops it at the first poll of that
     endpoint after UNCLEAR_LIMIT_S of unclear polls; the caller's work between polls (AI Gateway
     setup) can delay that poll."""
@@ -466,7 +501,7 @@ def wait_for_endpoints(sent_by_name, timeout=2400, poll=30):
                     f"{describe(ep.pending_config)} (config update {update.value if update else 'not reported'}), "
                     f"not this run's update to {sent.full_name} v{sent.version}. Another SETUP run or a change in "
                     "the Serving UI may be updating it; wait until it is done, then run the task again.")
-            if verdict in (SETTLED, DONE, FAILED, REPLACED):
+            if verdict in (SETTLED, DONE, FAILED, DIFFERENT, REPLACED):
                 ready = ep.state.ready.value if ep.state.ready else "?"
                 if update in SETTLED_BAD:
                     print(f"  '{name}' last config update {update.value} (state: {ready}; pending config "
@@ -604,7 +639,9 @@ for model_name, endpoint_name in SERVED:
 # put_ai_gateway replaces the endpoint's whole AI Gateway config, so each call passes every feature
 # this demo uses: one left out would be switched off.
 # An update (or create) that ends UPDATE_FAILED / UPDATE_CANCELED stops the task here with Model
-# Serving's message; the endpoint keeps serving its previous config meanwhile. Both endpoints are
+# Serving's message; the endpoint keeps serving its previous config meanwhile. A completed config
+# that serves this run's model version with other settings (DIFFERENT) stops it naming what differs:
+# that is no failed update, so it does not claim the previous config keeps serving. Both endpoints are
 # polled together (wait_for_endpoints, one deadline), so either one's failure stops the task as soon
 # as it shows, and each gets its AI Gateway config as soon as it is ready. That setup runs between
 # polls, so it can delay the other endpoint's next poll (and so a stop at UNCLEAR_LIMIT_S).
@@ -616,6 +653,11 @@ for endpoint_name, ep, verdict in wait_for_endpoints({name: deployed[name] for n
             f"{endpoint_name}: another update replaced this run's update to {sent.full_name} v{sent.version}: the "
             f"endpoint now serves {describe(ep.config)}. Another SETUP run or a change in the Serving UI may have "
             "updated it; run the task again once it is done.")
+    if verdict == DIFFERENT:
+        raise RuntimeError(
+            f"{endpoint_name}: the endpoint's current config serves {sent.full_name} v{sent.version}, but differs "
+            f"from the config this run submitted: {differences(ep.config, sent.target)}. It may have been changed "
+            "in the Serving UI; check the endpoint's config, then run the task again to set it back.")
     if verdict != DONE:
         raise RuntimeError(
             f"{endpoint_name}: the config update to {sent.full_name} v{sent.version} did not complete (config update "

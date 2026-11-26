@@ -53,9 +53,20 @@
 # MAGIC arrays also works); output DataFrame `arr_prob` (abnormal probability) + `arr_flag`
 # MAGIC (1.0 when `arr_prob >= 0.5`, else 0.0).
 # MAGIC
-# MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v6** (torch 2.11.0, CUDA 13). Nothing
-# MAGIC is installed: the environment ships mlflow-skinny 3.13.0, the version the model is logged with
-# MAGIC (`MODEL_PIP_REQUIREMENTS` in `common/config.py`), and every other package the notebook uses.
+# MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v6** (torch 2.11.0, CUDA 13). The
+# MAGIC first code cell installs mlflow-skinny 3.18.0, the version the model is logged with
+# MAGIC (`MODEL_PIP_REQUIREMENTS` in `common/config.py`), over the 3.13.0 the environment ships; every
+# MAGIC other package the notebook uses is the environment's, unchanged.
+
+# COMMAND ----------
+
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the version the model is logged with (this environment ships 3.13.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

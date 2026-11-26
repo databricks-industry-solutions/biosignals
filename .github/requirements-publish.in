@@ -1,3 +1,10 @@
+# The docs publish build's direct dependencies (.github/workflows/publish.yaml, Python 3.11).
+# requirements-publish.txt, with every version pinned and hashed, is generated from this file; from
+# the repository root:
+#   uv pip compile .github/requirements-publish.in --universal --generate-hashes --no-header \
+#     --python-version 3.11.5 -o .github/requirements-publish.txt
+# Add -P <package>==<version> to move one package and keep the others where they are. 3.11.5 is
+# the oldest Python 3.11 that soupsieve 4.0 supports.
 beautifulsoup4==4.15.0
 jupyter-book==2.1.7
 markdown==3.11.2

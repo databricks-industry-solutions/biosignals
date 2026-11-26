@@ -541,6 +541,7 @@ def _publish_request_bodies(tmp_path, calls):
             subprocess.run(["databricks", *args], env=env, capture_output=True, timeout=60, check=True)
     finally:
         server.shutdown()
+        server.server_close()
     return bodies
 
 
@@ -837,8 +838,7 @@ def _runs(notebook, spec, package):
 def test_every_notebook_using_mlflow_runs_the_models_mlflow_version():
     """The training notebooks log with exactly the mlflow version the models' requirements name;
     the gate, serving and batch notebooks run that version or a newer one. Each gets it from its
-    %pip line or, with none naming mlflow-skinny, from what its environment ships (the training
-    notebooks too, when their environment ships exactly the models' version)."""
+    %pip line or, with none naming mlflow-skinny, from what its environment ships."""
     (model_mlflow,) = [r.removeprefix("mlflow==") for r in config.MODEL_PIP_REQUIREMENTS if r.startswith("mlflow==")]
     loggers = {"02_train_arr_model.py", "03_train_afib_model.py"}
     users = loggers | {"04_validate_and_promote.py", "05_serve_endpoints.py", "07_arr_triage.py", "08_afib_classify.py"}
@@ -870,11 +870,26 @@ def test_every_notebook_running_the_models_runs_their_torch_version():
     assert seen == users
 
 
-def test_installed_mlflow_skinny_accepts_the_environments_sdk_and_protobuf():
-    """A %pip line that installs mlflow-skinny keeps the environment's databricks-sdk and protobuf
-    only when that mlflow-skinny version accepts them (conftest.MLFLOW_SKINNY_REQUIRES, from its
-    package metadata); otherwise pip would move them, which stops the Python kernel from restarting
-    when it moves them down."""
+def test_the_test_runner_runs_the_models_torch_and_cloudpickle():
+    """run_tests_python311.sh, and the command dev/tests/README.md gives as the same, run the suite
+    with the torch and cloudpickle the models are pickled and loaded with, so the local
+    pickle-and-load check runs them."""
+    models = dict(r.split("==") for r in config.MODEL_PIP_REQUIREMENTS)
+    runner = (DEMO_ROOT / "dev" / "tests" / "run_tests_python311.sh").read_text()
+    readme = (DEMO_ROOT / "dev" / "tests" / "README.md").read_text()
+    (command,) = re.findall(r"```bash\n(uv run --no-project .*?)```", readme, re.DOTALL)
+    pins = re.findall(r"--with ([\w.-]+)==(\S+)", runner)
+    assert pins == re.findall(r"--with ([\w.-]+)==(\S+)", command)
+    for package in ("torch", "cloudpickle"):
+        assert dict(pins).get(package) == models[package], f"the runner runs {package} {dict(pins).get(package)}"
+
+
+def test_installed_mlflow_skinny_accepts_the_environments_sdk_protobuf_and_cloudpickle():
+    """A %pip line that installs mlflow-skinny keeps the environment's databricks-sdk, protobuf and
+    cloudpickle only when that mlflow-skinny version accepts them (conftest.MLFLOW_SKINNY_REQUIRES,
+    from its package metadata); otherwise pip would move them, which stops the Python kernel from
+    restarting when it moves databricks-sdk or protobuf down, and changes the cloudpickle the models
+    are pickled and loaded with."""
     seen = set()
     for notebook, spec in _task_environments():
         for line in pip_lines(DEMO_ROOT / "workflow" / notebook):
@@ -887,7 +902,8 @@ def test_installed_mlflow_skinny_accepts_the_environments_sdk_and_protobuf():
                 assert runs in SpecifierSet(allowed), (
                     f"{notebook}: mlflow-skinny {version} requires {package}{allowed}, {spec} has {runs}")
             seen.add(notebook)
-    assert seen == {"05_serve_endpoints.py", "07_arr_triage.py", "08_afib_classify.py"}
+    assert seen == {"02_train_arr_model.py", "03_train_afib_model.py", "04_validate_and_promote.py",
+                    "05_serve_endpoints.py", "07_arr_triage.py", "08_afib_classify.py"}
 
 
 def _string_literals(path):

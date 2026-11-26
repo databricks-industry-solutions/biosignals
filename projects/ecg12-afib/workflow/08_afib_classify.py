@@ -24,13 +24,13 @@
 # MAGIC see `docs/express-deployment.md`) does not apply here.
 # MAGIC
 # MAGIC **Compute:** standard serverless (CPU), **environment 6** (same as `07_`, including the
-# MAGIC mlflow-skinny 3.13.0 and the CPU build of torch 2.11.0 its first code cells install).
+# MAGIC mlflow-skinny 3.18.0 and the CPU build of torch 2.11.0 its first code cells install).
 # MAGIC Parameters: `run_date`, `catalog_name` (required), `schema_name`.
 
 # COMMAND ----------
 
-# DBTITLE 1,Install mlflow-skinny 3.13.0, the models' version (this environment ships 3.12.0)
-# MAGIC %pip install "mlflow-skinny==3.13.0"
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the models' version (this environment ships 3.12.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
 
 # COMMAND ----------
 

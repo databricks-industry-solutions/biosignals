@@ -174,8 +174,9 @@ training environment whose versions no longer match `MODEL_PIP_REQUIREMENTS`.
 `cloudpickle` there and loaded elsewhere). When moving to another serverless environment version:
 
 1. Read that environment's release notes and package list.
-2. Update `MODEL_PIP_REQUIREMENTS` to its numpy, pandas, cloudpickle, torch and mlflow versions (torch
-   without the CUDA tag; mlflow at the environment's mlflow-skinny version).
+2. Update `MODEL_PIP_REQUIREMENTS` to its numpy, pandas, cloudpickle and torch versions (torch
+   without the CUDA tag), and keep mlflow at the version every notebook that logs, loads or serves
+   the models installs (`common/config.py`), never below the environment's mlflow-skinny.
 3. Don't install a package version **below** what an environment ships: on serverless, downgrading a core
    package such as `databricks-sdk` or `protobuf` can stop the notebook's Python process from restarting.
    The tests in `dev/tests` check this.

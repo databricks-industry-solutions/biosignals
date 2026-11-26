@@ -15,11 +15,11 @@
 # MAGIC **Training:** one fixed configuration, `TRAIN_PARAMS` in `common/config.py` (default: Adam,
 # MAGIC learning rate 1e-3, 20 epochs, batch 64, seed 0) plus `AFIB_LABEL_SMOOTHING`, no
 # MAGIC hyperparameter search. **Why the metrics sit near 1.0:** the synthetic rhythms are close to
-# MAGIC separable by design. Beat-to-beat irregularity separates AFib (RR intervals vary ~20 % in AFib,
-# MAGIC ~3 % in sinus rhythm, including the fast sinus rhythm of the Other class), AFib alone has no P
+# MAGIC separable by design. Beat-to-beat irregularity separates AFib (RR intervals vary by about 20 % in AFib,
+# MAGIC about 3 % in sinus rhythm, including the fast sinus rhythm of the Other class), AFib alone has no P
 # MAGIC waves, a fibrillatory baseline (f-waves) and more beat-to-beat amplitude scatter, and heart rate
 # MAGIC nearly separates NSR (drawn at 60–100 bpm) from both abnormal classes (100–160 bpm). So
-# MAGIC validation accuracy is ~1.0: this notebook is a clean showcase of the train → track → register
+# MAGIC validation accuracy is about 1.0: this notebook is a clean showcase of the train → track → register
 # MAGIC step of the model cycle, not a hard ML problem.
 # MAGIC
 # MAGIC **MLflow** (one run in the project experiment, the `mlflow_experiment` job parameter, which
@@ -43,11 +43,27 @@
 # MAGIC **Serving constraint:** `AfibCNN`, `AfibModelPyfunc` and `_coerce_ecg` stay in this notebook so
 # MAGIC MLflow pickles them by value; they use only torch / numpy / pandas and plain notebook
 # MAGIC constants, never the `common` package. (The training loop in `common/training.py` is not part
-# MAGIC of the logged model.)
+# MAGIC of the logged model.) The model is logged with `pip_requirements=config.MODEL_PIP_REQUIREMENTS`:
+# MAGIC exact versions of only what it needs at serving time, equal to this environment's (the pickled
+# MAGIC model loads with the versions it was saved with), and no entry of the kind that can prevent Model
+# MAGIC Serving's express deployment (`docs/express-deployment.md`).
 # MAGIC
 # MAGIC Contract: input `(-1, 12, 2500)` float32; output `(-1, 2)` = `[p_not_afib, p_afib]` per row.
 # MAGIC
-# MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v5** (torch, CUDA, mlflow; no %pip).
+# MAGIC **Compute:** serverless GPU, **A10**, base environment **AI v6** (torch 2.11.0, CUDA 13). The
+# MAGIC first code cell installs mlflow-skinny 3.18.0, the version the model is logged with
+# MAGIC (`MODEL_PIP_REQUIREMENTS` in `common/config.py`), over the 3.13.0 the environment ships; every
+# MAGIC other package the notebook uses is the environment's, unchanged.
+
+# COMMAND ----------
+
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the version the model is logged with (this environment ships 3.13.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -243,6 +259,7 @@ with mlflow.start_run(run_id=run.info.run_id):            # same run as the trai
         artifacts={"state_dict": sd_path},
         signature=signature,
         input_example=ex_in,
+        pip_requirements=config.MODEL_PIP_REQUIREMENTS,   # exact training versions, no express blockers
         registered_model_name=full_name,
     )
     version = str(model_info.registered_model_version)

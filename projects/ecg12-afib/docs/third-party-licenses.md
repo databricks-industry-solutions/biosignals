@@ -2,16 +2,16 @@
 
 [← ecg12-afib README](../README.md)
 
-## Third-party packages and licenses
-
 The source in this project is provided subject to the Databricks License (see
 [LICENSE.md](../../../LICENSE.md)). The packages below keep their own licenses. Versions come from the
-lockfiles (`app/uv.lock`, `app/bun.lock`), the notebooks' `%pip install` lines and
+lockfiles (`app/uv.lock`, `app/bun.lock`), the notebooks' `%pip install` lines, the served models'
+requirements (`MODEL_PIP_REQUIREMENTS` in `common/config.py`) and
 `dev/tests/run_tests_python311.sh`; "preinstalled" means the package comes with the Databricks
-serverless environment the job runs in (AI v5 for training, ML v5 for batch scoring) and the
-project does not pin it. Licenses were read from each package's own metadata or license file.
+serverless environment the task runs in (AI v6 for training and the gate, standard environment 6
+for data generation, serving and batch scoring; the jobs name each one) and the project does not
+pin it. Licenses were read from each package's own metadata or license file.
 
-### Shipped: packages the project's code uses directly
+## Shipped: packages the project's code uses directly
 
 | Package | Version | Purpose (where used) | License | Copyright | Source |
 |---|---|---|---|---|---|
@@ -19,13 +19,13 @@ project does not pin it. Licenses were read from each package's own metadata or 
 | `@tanstack/react-router` | 1.145.7 | Client-side routing (`ui/main.tsx`, `ui/routes/`) | MIT | Copyright (c) 2021-present Tanner Linsley | [repo](https://github.com/TanStack/router) |
 | `class-variance-authority` | 0.7.1 | Button variant classes (`ui/components/ui/button.tsx`) | Apache-2.0 | Copyright 2022 Joe Bell | [repo](https://github.com/joe-bell/cva) |
 | `clsx` | 2.1.1 | Joining CSS class names (`ui/lib/utils.ts`) | MIT | Copyright (c) Luke Edwards | [repo](https://github.com/lukeed/clsx) |
-| `databricks-sdk` | 0.117.0 (app); 0.67.0 (`05_serve_endpoints`) | Workspace and serving-endpoint APIs (`backend/router.py`, `backend/core/_defaults.py`, `workflow/05_serve_endpoints.py`) | Apache-2.0 | Copyright 2023 Databricks, Inc. | [repo](https://github.com/databricks/databricks-sdk-py) |
+| `databricks-sdk` | 0.117.0 (app); preinstalled in the notebooks (0.122.0 in AI v6 and environment 6) | Workspace and serving-endpoint APIs (`backend/router.py`, `backend/core/_defaults.py`, `common/tracking.py`, `workflow/05_serve_endpoints.py`) | Apache-2.0 | Copyright 2023 Databricks, Inc. | [repo](https://github.com/databricks/databricks-sdk-py) |
 | `fastapi` | 0.136.3 | App HTTP API (`app/src/ecg_demo_react/backend/`) | MIT | Copyright (c) 2018 Sebastián Ramírez | [repo](https://github.com/fastapi/fastapi) |
 | `matplotlib` | preinstalled | ECG and evaluation plots (`common/ecg_plots.py`, `common/eval_plots.py`, notebooks 01, 04, 06) | Matplotlib License (PSF-based) | Copyright (c) 2012- Matplotlib Development Team; All Rights Reserved | [repo](https://github.com/matplotlib/matplotlib) |
-| `mlflow-skinny` | 3.8.1 (`05_serve_endpoints`); otherwise preinstalled | Experiment tracking, model registry, model loading (notebooks 02-05, 07, 08) | Apache-2.0 | Copyright 2018 Databricks, Inc. | [repo](https://github.com/mlflow/mlflow) |
+| `mlflow-skinny` | 3.18.0 (notebooks 02-04 over AI v6's 3.13.0; notebooks 05, 07, 08 over environment 6's 3.12.0); `mlflow` 3.18.0 in the served models' requirements | Experiment tracking, model registry, model loading (notebooks 02-05, 07, 08) | Apache-2.0 | Copyright 2018 Databricks, Inc. | [repo](https://github.com/mlflow/mlflow) |
 | `neurokit2` | 0.2.12 | Recording noise for the synthetic ECGs (`common/ecg_signal_gen.py` and its app copy) | MIT | Copyright (c) 2020, Dominique Makowski | [repo](https://github.com/neuropsychology/NeuroKit) |
-| `numpy` | 1.26.4 (app); preinstalled (notebooks) | ECG arrays, training, scoring, patient records (`common/`, app backend, notebooks) | BSD-3-Clause | Copyright (c) 2005-2023, NumPy Developers | [repo](https://github.com/numpy/numpy) |
-| `pandas` | preinstalled | Training and scoring tables (`common/scoring.py`, `common/training_data.py`, notebooks 02, 03, 04, 06) | BSD-3-Clause | Copyright (c) 2008-2011, AQR Capital Management, LLC, Lambda Foundry, Inc. and PyData Development Team; Copyright (c) 2011-2023, Open source contributors | [repo](https://github.com/pandas-dev/pandas) |
+| `numpy` | 1.26.4 (app); preinstalled (notebooks), 2.3.4 in the served models' requirements | ECG arrays, training, scoring, patient records (`common/`, app backend, notebooks) | BSD-3-Clause | Copyright (c) 2005-2023, NumPy Developers | [repo](https://github.com/numpy/numpy) |
+| `pandas` | preinstalled; 2.3.3 in the served models' requirements | Training and scoring tables (`common/scoring.py`, `common/training_data.py`, notebooks 02, 03, 04, 06) | BSD-3-Clause | Copyright (c) 2008-2011, AQR Capital Management, LLC, Lambda Foundry, Inc. and PyData Development Team; Copyright (c) 2011-2023, Open source contributors | [repo](https://github.com/pandas-dev/pandas) |
 | `pydantic` | 2.13.4 | API request/response models (`backend/models.py`, `backend/core/`) | MIT | Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors | [repo](https://github.com/pydantic/pydantic) |
 | `pydantic-settings` | 2.16.2 | App configuration from environment variables (`backend/core/_config.py`) | MIT | Copyright (c) 2022 Samuel Colvin and other contributors | [repo](https://github.com/pydantic/pydantic-settings) |
 | `pyspark` | preinstalled | Spark tables and transforms (`common/scoring.py`, `common/training_data.py`, notebooks 04, 06, 08) | Apache-2.0 | Copyright 2014 and onwards The Apache Software Foundation | [repo](https://github.com/apache/spark) |
@@ -37,10 +37,14 @@ project does not pin it. Licenses were read from each package's own metadata or 
 | `starlette` | 1.10.0 | Serving the built UI files (`backend/core/_static.py`) | BSD-3-Clause | Copyright © 2018, Encode OSS Ltd | [repo](https://github.com/Kludex/starlette) |
 | `tailwind-merge` | 3.4.0 | Merging CSS classes (`ui/lib/utils.ts`) | MIT | Copyright (c) 2021 Dany Castillo | [repo](https://github.com/dcastil/tailwind-merge) |
 | `tailwindcss` | 4.3.3 | UI styling (`ui/styles/globals.css`; declared directly in `package.json`) | MIT | Copyright (c) Tailwind Labs, Inc. | [repo](https://github.com/tailwindlabs/tailwindcss) |
-| `torch` (PyTorch) | preinstalled | The two neural-network models and their training (`common/training.py`, notebooks 02, 03) | BSD-3-Clause | Copyright (c) 2016- Facebook, Inc. (Adam Paszke) and the other contributors listed in its LICENSE | [repo](https://github.com/pytorch/pytorch) |
+| `torch` (PyTorch) | preinstalled in AI v6 (2.11.0, CUDA 13 build; notebooks 02-04); 2.11.0, CPU build from PyTorch's CPU-only index (notebooks 07, 08); 2.11.0 in the served models' requirements | The two neural-network models and their training (`common/training.py`, notebooks 02, 03) | BSD-3-Clause | Copyright (c) 2016- Facebook, Inc. (Adam Paszke) and the other contributors listed in its LICENSE | [repo](https://github.com/pytorch/pytorch) |
 | `uvicorn` | 0.49.0 | Runs the app's web server (`app/app.yml`) | BSD-3-Clause | Copyright © 2017-present, Encode OSS Ltd | [repo](https://github.com/Kludex/uvicorn) |
 
-### Build and development tools (not shipped)
+Pinned but not imported by the project's code: `cloudpickle` 3.1.1 (BSD-3-Clause), which MLflow
+uses to save the models, in the served models' requirements. `protobuf` (BSD-3-Clause) comes
+preinstalled with databricks-sdk (6.33.5 in AI v6 and environment 6); no notebook pins it.
+
+## Build and development tools (not shipped)
 
 | Package | Version | Purpose (where used) | License | Source |
 |---|---|---|---|---|
@@ -61,7 +65,7 @@ project does not pin it. Licenses were read from each package's own metadata or 
 | `cloudpickle` | 3.0.0 | Optional local checks: model serialization (`dev/tests/`) | BSD-3-Clause | [repo](https://github.com/cloudpipe/cloudpickle) |
 | `PyYAML` | 6.0.3 | Optional local checks: reading the bundle files (`dev/tests/`) | MIT | [repo](https://github.com/yaml/pyyaml) |
 
-### UI packages pulled in indirectly
+## UI packages pulled in indirectly
 
 `app/bun.lock` holds 212 UI packages: the 22 listed above and 190 they pull in. Of those 190, 50
 are reachable from the UI's runtime packages (the `dependencies` of `app/package.json`, following
@@ -83,7 +87,7 @@ builds that aren't installed on the machine that checked them.
 | `ansis` | 4.3.1 | build: via `@tanstack/router-utils` | ISC | [repo](https://github.com/webdiscus/ansis) |
 | `graceful-fs`, `lru-cache`, `picocolors`, `semver`, `yallist` | 4.2.11, 5.1.1, 1.1.1, 6.3.1, 3.1.1 | build: via the bundler and Babel | ISC | [graceful-fs](https://github.com/isaacs/node-graceful-fs), [lru-cache](https://github.com/isaacs/node-lru-cache), [picocolors](https://github.com/alexeyraspopov/picocolors), [semver](https://github.com/npm/node-semver), [yallist](https://github.com/isaacs/yallist) |
 
-### Every Python package the deployed app installs
+## Every Python package the deployed app installs
 
 The app's build pins every runtime Python package from `app/uv.lock` (the output of
 `uv export --frozen --no-dev --no-emit-project`: 50 lines for 49 packages, because `pandas` has

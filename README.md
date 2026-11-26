@@ -40,14 +40,16 @@ dashboards, its own bundle (`databricks.yml`).
 ## Installation Guidelines
 
 Clone this repository into your workspace as a Git folder, set the project's required variables
-in an uncommitted `.databricks/bundle/<target>/variable-overrides.json` file (never in the
-committed `databricks.yml`), open the project's `databricks.yml` in the Asset Bundle Editor, click
-"Deploy", then run its jobs from the Deployments tab. Step-by-step with screenshots:
+in an uncommitted `.databricks/bundle/<target>/variable-overrides.json` file (start from the
+project's `variable-overrides.example.json` if it has one; never in the committed
+`databricks.yml`), open the project's `databricks.yml` in the Asset Bundle Editor, click "Deploy",
+then run its jobs from the Deployments tab. Step-by-step with screenshots:
 [docs/installation.md](docs/installation.md).
 
 Projects with a Databricks App also have a script that builds the app on your laptop and does the
-full install (for example `projects/ecg12-afib/deploy.sh`). Projects create billable resources;
-each README says which, and how to remove them.
+full install (for example `projects/ecg12-afib/deploy.sh`; step-by-step for macOS and Windows in
+[projects/ecg12-afib/docs/quickstart.md](projects/ecg12-afib/docs/quickstart.md)). Projects create
+billable resources; each README says which, and how to remove them.
 
 ## Contributing
 
@@ -92,7 +94,7 @@ Any issues discovered through the use of this project should be filed as GitHub 
 
 ## 📄 Third-Party Package Licenses
 
-&copy; 2026 Databricks, Inc. All rights reserved. The source in this project is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
+&copy; 2026 Databricks, Inc. All rights reserved. The source in this project is provided subject to the [Databricks License](https://databricks.com/db-license-source). All included or referenced third party libraries are subject to the licenses set forth below.
 
 Each project lists its packages, versions, licenses and source links in its own documentation:
 

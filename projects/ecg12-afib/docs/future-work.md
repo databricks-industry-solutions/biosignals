@@ -2,9 +2,7 @@
 
 [← ecg12-afib README](../README.md)
 
-## Future work
-
-**Bulk inference.** The DAILY job scores one day's ~100 ECGs on the driver; larger backlogs would
+**Bulk inference.** The DAILY job scores one day's roughly 100 ECGs on the driver; larger backlogs would
 need the scoring spread over workers, for example with Spark or Ray.
 
 **Other ECG classifiers.** Models that classify other ECG patterns (other rhythms, conduction

@@ -1,5 +1,5 @@
-"""State that every worker process of the app shares: the rate-limit counts of /api/analyze and
-/api/warmup, and when each serving endpoint last answered (the warm-up cache).
+"""State that every worker process of the app shares: the rate-limit counts of /api/analyze,
+/api/warmup and /api/generate, and when each serving endpoint last answered (the warm-up cache).
 
 app.yml runs uvicorn with --workers 2, and each worker is its own process, so in-memory counters
 would let a caller through twice as often and miss the other worker's warm-up answers. Both live

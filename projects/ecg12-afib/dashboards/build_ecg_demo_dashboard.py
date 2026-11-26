@@ -34,8 +34,8 @@ Until data exists the tiles show errors, not empty charts: the batch tiles until
 has run once (the tables do not exist before), the live tiles until AI Gateway has delivered the
 first inference-table logs. AI Gateway creates each inference table with a placeholder schema
 (``databricks_request_id`` only) when 05_serve_endpoints enables it and adds the real columns
-with the first delivered batch of logs, best effort, typically within about an hour of the first
-app request; until then the live queries fail with UNRESOLVED_COLUMN.
+with the first delivered batch of logs (20 to 60 minutes after the first app request in our tests;
+the docs say seconds for CPU endpoints); until then the live queries fail with UNRESOLVED_COLUMN.
 
 Table, model and endpoint names come from ../common/config.py.
 """
@@ -287,8 +287,8 @@ layout = [
                        "request per endpoint, keeping the scale-to-zero endpoints awake; "
                        f"`client_request_id = '{config.WARMUP_REQUEST_ID}'`) are left out of every tile below and "
                        "counted on their own. **These tiles show an error until AI "
-                       "Gateway has delivered the first inference-table logs** (best effort, typically within about an "
-                       "hour of the first app request): until then the tables have no columns but "
+                       "Gateway has delivered the first inference-table logs** (20 to 60 minutes after the first app "
+                       "request in our tests): until then the tables have no columns but "
                        "`databricks_request_id`.")],
          0, 31, 12, 3),
 ]
@@ -301,6 +301,7 @@ live_layout = [
             agg=("avg(execution_duration_ms)", "AVG(`execution_duration_ms`)"),
             period=("daily(request_time)", 'DATE_TRUNC("DAY", `request_time`)'),
             fmt={"type": "number", "decimalPlaces": {"type": "max", "places": 1}}),
+    # 1 MiB: the endpoint AI Gateway's logging limit (https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints).
     counter("kpi-not-logged", "live_requests", None, "Requests not logged (payload > 1 MiB)", 6, LIVE_Y, w=3,
             agg=("sum(not_logged)", "SUM(`not_logged`)")),
     counter("kpi-warmups", "live_warmups", None, "App warm-up pings (not in the other tiles)", 9, LIVE_Y, w=3,

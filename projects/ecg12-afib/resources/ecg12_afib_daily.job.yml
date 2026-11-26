@@ -2,11 +2,11 @@
 # the champion models are loaded from Unity Catalog and score the batch on the driver, not via
 # the endpoints). The day's batch is SIMULATED incoming data: 06_ generates synthetic ECGs +
 # patient records in place of a real ingestion step (nothing is ingested).
-#   06_generate_batch_data -> batch_data_12l_<date>  (simulated)              standard serverless
+#   06_generate_batch_data -> batch_data_12l_<date>  (simulated)              standard serverless (env 6)
 #   07_arr_triage          -> arr_triaged_12l_<date> + that date's rows of arr_triage_history_12l
-#                             (bio_ecg12_arr)                                 standard serverless, ML v5
+#                             (bio_ecg12_arr)                                 standard serverless (env 6)
 #   08_afib_classify       -> dailyOrweekly_arr_afib_inference_12l, that date's rows (bio_ecg12_afib)
-#                                                                             standard serverless, ML v5
+#                                                                             standard serverless (env 6)
 # Needs the SETUP job's models (ecg12_afib_setup.job.yml) to exist with a champion alias, and the
 # schema to be this deployment's: 06_ first checks the owner SETUP recorded (deployment_id) and stops,
 # before writing anything, when the schema belongs to another deployment or to none yet.
@@ -38,11 +38,16 @@ resources:
         timezone_id: UTC
         pause_status: PAUSED
 
-      # Standard serverless ML v5 environment (torch, mlflow) for the two scoring tasks.
+      # Every task names its environment, as in the SETUP job (a task without one gets the
+      # workspace's default version, which moves to new releases).
       environments:
-        - environment_key: ml_v5
+        # Standard serverless environment 6, as SETUP's data generation and serving, for all three
+        # tasks. It ships no torch: the two scoring notebooks install the models' torch 2.11.0 (its CPU
+        # build, from PyTorch's CPU-only index) and mlflow-skinny 3.18.0 (the ML base environment of
+        # environment 6 would bring torch 2.12.0+cpu, not the models' version).
+        - environment_key: standard_v6
           spec:
-            base_environment: databricks_ml_v5
+            environment_version: "6"
 
       tasks:
         # Stands in for ingestion: synthetic data, so swap this task for a real ingestion step
@@ -51,18 +56,19 @@ resources:
           description: "SIMULATED incoming data, not real ingestion: generates the day's synthetic 12-lead ECGs + synthetic patient records into batch_data_12l_<date>."
           notebook_task:
             notebook_path: ../workflow/06_generate_batch_data.py
+          environment_key: standard_v6
 
         - task_key: arr_triage
           depends_on:
             - task_key: simulate_incoming_batch
           notebook_task:
             notebook_path: ../workflow/07_arr_triage.py
-          environment_key: ml_v5
+          environment_key: standard_v6
 
-        # Same standard serverless ML environment as arr_triage (no GPU, no classic cluster).
+        # Same standard serverless environment as arr_triage (no GPU, no classic cluster).
         - task_key: afib_classify
           depends_on:
             - task_key: arr_triage
           notebook_task:
             notebook_path: ../workflow/08_afib_classify.py
-          environment_key: ml_v5
+          environment_key: standard_v6

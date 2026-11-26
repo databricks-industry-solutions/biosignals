@@ -149,7 +149,9 @@ class StandInServing:
 def backend(tmp_path, clock):
     """The app with a stand-in serving client and its own state file, plus the router module."""
     pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")                      # FastAPI's TestClient
+    # FastAPI's TestClient is starlette's, which uses httpx2, or httpx with a deprecation warning.
+    if not any(importlib.util.find_spec(client) for client in ("httpx2", "httpx")):
+        pytest.skip("needs httpx2, the HTTP client of starlette's TestClient")
     missing = [name for name in ("_metadata.py", "_version.py") if not (APP_SRC / "ecg_demo_react" / name).is_file()]
     if missing:
         pytest.skip(f"app/src/ecg_demo_react/{' and '.join(missing)} not generated: run app/build_from_lockfiles.sh")
@@ -258,6 +260,33 @@ def test_analyze_rate_limit_per_user_and_for_all_users(backend, monkeypatch, clo
     # A malformed ECG is a 422 whatever the counts (FastAPI checks the body before the route runs).
     assert backend.client.post("/api/analyze", json={"ecg": []},
                                headers={"X-Forwarded-User": "alice"}).status_code == 422
+
+
+def test_generate_rate_limit_per_user_and_for_all_users(backend, monkeypatch, clock):
+    """/api/generate is limited like /api/analyze and /api/warmup (the same _admit and SharedState
+    counts): a 429 with a RateLimited detail and Retry-After once a user, or all users together,
+    asked for too many readings in the window; another user still gets one until the total is hit."""
+    assert backend.router.GENERATE_LIMIT.route == "generate"        # its own counter, not analyze's
+    limit = backend.router._Limit("generate", "new readings", per_caller=2, total=3, window_s=60)
+    monkeypatch.setattr(backend.router, "GENERATE_LIMIT", limit)
+
+    def generate(user):
+        return backend.client.post("/api/generate", json={"rhythm": "AFib"}, headers={"X-Forwarded-User": user})
+
+    assert [generate("alice").status_code for _ in range(2)] == [200, 200]
+    clock.now += 15
+    refused = generate("alice")
+    assert refused.status_code == 429 and refused.headers["Retry-After"] == "45"
+    detail = refused.json()["detail"]
+    assert {k: detail[k] for k in ("scope", "limit", "window_s", "retry_after_s")} == {
+        "scope": "caller", "limit": 2, "window_s": 60, "retry_after_s": 45}
+    assert detail["message"] == "This app allows 2 new readings per user in 60 s. Try again in 45 s."
+    assert generate("bob").status_code == 200
+    assert generate("carol").json()["detail"]["scope"] == "total"
+    assert backend.client.post("/api/analyze", json={"ecg": _ecg()},
+                               headers={"X-Forwarded-User": "alice"}).status_code == 200   # counted apart
+    clock.now += 60
+    assert generate("alice").status_code == 200                    # the window has passed
 
 
 def test_warmup_answers_from_a_recent_ping_without_querying_or_counting(backend, monkeypatch, clock):

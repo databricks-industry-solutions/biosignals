@@ -134,8 +134,10 @@ class FakeMlflow:
         assert isinstance(figure, Figure) and artifact_file.endswith(".png"), artifact_file
         self._artifact(artifact_file, [t.get_text() for t in figure.texts] + [ax.get_title(loc="left") for ax in figure.axes])
 
-    def log_model(self, name, python_model, artifacts, signature, input_example, registered_model_name):
+    def log_model(self, name, python_model, artifacts, signature, input_example, pip_requirements,
+                  registered_model_name):
         assert signature is not None and input_example.shape[0] == 1
+        assert pip_requirements == config.MODEL_PIP_REQUIREMENTS       # exact training versions, no express blockers
         model = self.registry.setdefault(registered_model_name, {"versions": {}, "aliases": {}})
         version = str(len(model["versions"]) + 1)
         model["versions"][version] = {"pickle": self._cloudpickle.dumps(python_model),

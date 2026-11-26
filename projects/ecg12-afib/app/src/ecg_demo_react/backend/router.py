@@ -59,6 +59,9 @@ ANALYZE_ERRORS: dict[int | str, dict[str, Any]] = {
 WARMUP_ERRORS: dict[int | str, dict[str, Any]] = {
     429: {"model": RateLimitedOut, "description": "Too many warm-up pings to this app"},
 }
+GENERATE_ERRORS: dict[int | str, dict[str, Any]] = {
+    429: {"model": RateLimitedOut, "description": "Too many new readings from this app"},
+}
 
 
 @dataclass(frozen=True)
@@ -75,7 +78,10 @@ class _Limit:
 # sends one at a time) stays well below 10 a minute. /api/warmup counts only the pings that query
 # the endpoints, not the cached answers (WARMUP_CACHE_S): one Live tab sends at most 1 +
 # MAX_COLD_PINGS (routes/index.tsx) = 9 while the endpoints wake, then one every WARMUP_INTERVAL_S.
+# /api/generate queries no endpoint but synthesizes an ECG on the app's own CPU; the UI asks for one
+# when the page loads and at each New reading click, well below 30 a minute for one person.
 ANALYZE_LIMIT = _Limit("analyze", "Triage -> Classify requests", per_caller=10, total=60, window_s=60)
+GENERATE_LIMIT = _Limit("generate", "new readings", per_caller=30, total=120, window_s=60)
 WARMUP_LIMIT = _Limit("warmup", "warm-up pings", per_caller=12, total=60, window_s=config.WARMUP_INTERVAL_S)
 # When both endpoints answered a warm-up ping less than this long ago, /api/warmup answers from that
 # ping without querying them, so any number of open tabs query each endpoint about once per
@@ -234,9 +240,11 @@ def app_config(settings: Dependencies.Config, ws: Dependencies.Client):
     )
 
 
-@router.post("/generate", response_model=GenerateResponse, operation_id="generate")
-def generate(req: GenerateRequest):
-    """One synthetic 12-lead ECG for the chosen rhythm + a synthetic patient record."""
+@router.post("/generate", response_model=GenerateResponse, operation_id="generate", responses=GENERATE_ERRORS)
+def generate(req: GenerateRequest, request: Request, state: SharedStateDep):
+    """One synthetic 12-lead ECG for the chosen rhythm + a synthetic patient record. GENERATE_LIMIT
+    refuses it (429) when a user, or all users together, asked for too many."""
+    _admit(state, request, GENERATE_LIMIT)
     rng = np.random.default_rng()
     if req.rhythm == "Random":
         label = int(rng.choice(list(LABEL_NAMES)))
@@ -294,7 +302,8 @@ def analyze(req: AnalyzeRequest, request: Request, serving: ServingClient, state
 @functools.cache
 def _warmup_inputs() -> list:
     """One fixed synthetic NSR ECG as a (1, N_LEADS, N_SAMPLES) tensor. One ECG per ping: a request
-    of two ECGs exceeds the 1 MiB cap above which AI Gateway does not log the payload."""
+    of two ECGs exceeds the 1 MiB cap above which AI Gateway does not log the payload
+    (https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)."""
     batch = synthesize_ecgs(np.array([NSR]), np.random.default_rng(0), noise_level=1.0, n_leads=config.N_LEADS)
     return batch.ecg[:1].astype(np.float32).tolist()
 

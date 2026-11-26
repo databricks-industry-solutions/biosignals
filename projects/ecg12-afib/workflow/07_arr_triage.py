@@ -12,16 +12,40 @@
 # MAGIC arrays, every day under one fixed table name, which the dashboard reads.
 # MAGIC
 # MAGIC **Scored on the driver** (`scoring.score_driver_side`, as in the gate): the champion version is
-# MAGIC loaded with `mlflow.pyfunc.load_model`, the day's ~100 ECGs are collected to the driver as one
+# MAGIC loaded with `mlflow.pyfunc.load_model`, the day's roughly 100 ECGs are collected to the driver as one
 # MAGIC `(n, 12, 2500)` tensor, and the predictions are joined back by `pseudo_patient_id`.
 # MAGIC
 # MAGIC **Batch path, not the endpoint:** the serving endpoints are not called, so these rows never
 # MAGIC appear in the endpoints' `*_payload` inference tables. `champion` is resolved to a concrete version
 # MAGIC first; that exact version scores and is recorded in `arr_model_info`. Re-running a date overwrites
-# MAGIC `arr_triaged_12l_<date>` and replaces that date's rows of `arr_triage_history_12l`.
+# MAGIC `arr_triaged_12l_<date>` and replaces that date's rows of `arr_triage_history_12l`. The model is
+# MAGIC loaded directly in the job, so Model Serving express deployment (which can apply to the endpoints in
+# MAGIC `05_`, see `docs/express-deployment.md`) does not apply here.
 # MAGIC
-# MAGIC **Compute:** standard serverless (CPU), base environment **ML v5** (`databricks_ml_v5`, which
-# MAGIC ships torch; no %pip). Parameters: `run_date`, `catalog_name` (required), `schema_name`.
+# MAGIC **Compute:** standard serverless (CPU), **environment 6**. The first code cells install the
+# MAGIC models' versions: mlflow-skinny 3.18.0 (the environment ships 3.12.0) and torch 2.11.0 (the
+# MAGIC environment ships no torch), and leave every other package (numpy, pandas, cloudpickle,
+# MAGIC databricks-sdk, protobuf) as the environment ships it, at the versions the models were trained
+# MAGIC with. torch comes from PyTorch's CPU-only package index, on its own `%pip` line: from PyPI, torch
+# MAGIC 2.11.0 on Linux is the CUDA build, which also installs about 20 nvidia / CUDA packages and
+# MAGIC triton that a CPU task never uses. If your workspace cannot reach `download.pytorch.org`
+# MAGIC (restricted network access from serverless compute, or only an internal package mirror), that
+# MAGIC line fails: drop its `--index-url=...` to install the CUDA build from your default index. Parameters: `run_date`, `catalog_name` (required), `schema_name`.
+
+# COMMAND ----------
+
+# DBTITLE 1,Install mlflow-skinny 3.18.0, the models' version (this environment ships 3.12.0)
+# MAGIC %pip install "mlflow-skinny==3.18.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Install torch 2.11.0, the models' version, CPU build (this environment ships no torch)
+# MAGIC %pip install --index-url=https://download.pytorch.org/whl/cpu "torch==2.11.0"
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

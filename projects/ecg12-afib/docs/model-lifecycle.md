@@ -68,10 +68,10 @@ same white style as `common/ecg_plots.py`.
 rate alone nearly separates triage: NSR is drawn at 60–100 bpm, AFib and Other at 100–160 bpm, so
 one heart-rate cut-off (about 95 bpm) calls about 99 % of ECGs right (99.7 % of the training
 dataset), not all, because AFib's irregular beats measure below 100 bpm for about 2–5 % of AFib
-ECGs. Beat-to-beat irregularity separates AFib (RR intervals vary ~20 % in AFib, ~3 % in sinus
+ECGs. Beat-to-beat irregularity separates AFib (RR intervals vary by about 20 % in AFib, about 3 % in sinus
 rhythm), and AFib also differs in more than rhythm (no P waves, f-waves, more beat-to-beat
 amplitude scatter).
-Validation and hold-out metrics therefore sit near ceiling (~1.0). This is a clean synthetic
+Validation and hold-out metrics therefore sit near ceiling (about 1.0). This is a clean synthetic
 showcase of the MLOps (machine-learning operations) cycle, not a hard ML problem, and the
 thresholds are engineering floors for this data, not clinical criteria. For the same reason the
 evaluation artifacts look near-perfect (an almost diagonal confusion matrix, ROC and

@@ -12,7 +12,9 @@
 # Nothing here names a workspace: pass your own Databricks CLI profile (-p <profile>) and the
 # required variables on every command, e.g.
 #   databricks bundle validate --strict -p <profile> --var catalog=<catalog> --var warehouse_id=<id>
-# (or export BUNDLE_VAR_catalog=<catalog> BUNDLE_VAR_warehouse_id=<id>).
+# (or export BUNDLE_VAR_catalog=<catalog> BUNDLE_VAR_warehouse_id=<id>, or copy
+# variable-overrides.example.json to .databricks/bundle/<target>/variable-overrides.json and fill it
+# in: docs/deploy.md, Variables in a file instead of --var).
 bundle:
   name: biosignals-ecg12-afib
 
@@ -94,6 +96,11 @@ targets:
     sync:
       exclude:
         - app/**
+    # Both targets deploy the same dashboard; the suffix keeps the two apart in the workspace.
+    resources:
+      dashboards:
+        ecg12_afib_dashboard:
+          display_name: "ECG-AFib 12-lead Demo (batch + live) [no_app]"
 
   full:
     mode: development

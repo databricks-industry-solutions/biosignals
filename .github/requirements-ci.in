@@ -1,1 +1,6 @@
+# What .github/workflows/databricks-ci.yml installs (Python 3.11) to parse each databricks.yml.
+# requirements-ci.txt, with every version pinned and hashed, is generated from this file; from the
+# repository root:
+#   uv pip compile .github/requirements-ci.in --universal --generate-hashes --no-header \
+#     --python-version 3.11 -o .github/requirements-ci.txt
 pyyaml==6.0.3

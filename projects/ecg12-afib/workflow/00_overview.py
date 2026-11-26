@@ -37,14 +37,14 @@
 # MAGIC | Notebook | Role | Runtime | Job → task |
 # MAGIC |---|---|---|---|
 # MAGIC | `00_overview` | This page | — | — |
-# MAGIC | `01_generate_training_data` | Synthetic labeled 12-lead ECGs from the shared generator → `training_data_12l` with a `train` / `val` / `holdout` split; sample plots of the signals | standard serverless | SETUP → `generate_training_data` |
-# MAGIC | `02_train_arr_model` | Train the triage model on `train` (+ `val` metrics), log to MLflow (incl. the layer table), register `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) | SETUP → `train_arr_model` (after 01) |
-# MAGIC | `03_train_afib_model` | Train the AFib classifier the same way → `bio_ecg12_afib` `@challenger` | serverless GPU (A10, AI v5) | SETUP → `train_afib_model` (after 01, parallel with 02) |
-# MAGIC | `04_validate_and_promote` | **Gate:** score both challengers on `holdout`, check the thresholds, log the evaluation artifacts; both pass → `@champion` moves to them, else the job stops | serverless GPU (A10, AI v5) | SETUP → `validate_and_promote` (after 02 + 03) |
-# MAGIC | `05_serve_endpoints` | Create / update endpoints `<endpoint_prefix>_arr` + `<endpoint_prefix>_afib` at the champion versions (never one that serves another deployment's model), AI Gateway inference tables + usage tracking, smoke query | standard serverless | SETUP → `serve_endpoints` (after 04) |
-# MAGIC | `06_generate_batch_data` | One day's new synthetic 12-lead ECGs + synthetic patient records, acquisition times spread over the day → `batch_data_12l_<YYYYMMDD>` | standard serverless | DAILY → `simulate_incoming_batch` (simulated incoming data, not real ingestion) |
-# MAGIC | `07_arr_triage` | Score all 12 leads with `bio_ecg12_arr@champion` on the driver → `arr_prob`, `arr_flag` → `arr_triaged_12l_<YYYYMMDD>` + that date's rows of `arr_triage_history_12l` | standard serverless (ML v5) | DAILY → `arr_triage` (after 06) |
-# MAGIC | `08_afib_classify` | Score the flagged rows with `bio_ecg12_afib@champion` on the driver → that date's rows of `dailyOrweekly_arr_afib_inference_12l` | standard serverless (ML v5) | DAILY → `afib_classify` (after 07) |
+# MAGIC | `01_generate_training_data` | Synthetic labeled 12-lead ECGs from the shared generator → `training_data_12l` with a `train` / `val` / `holdout` split; sample plots of the signals | standard serverless (environment 6) | SETUP → `generate_training_data` |
+# MAGIC | `02_train_arr_model` | Train the triage model on `train` (+ `val` metrics), log to MLflow (incl. the layer table), register `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v6) | SETUP → `train_arr_model` (after 01) |
+# MAGIC | `03_train_afib_model` | Train the AFib classifier the same way → `bio_ecg12_afib` `@challenger` | serverless GPU (A10, AI v6) | SETUP → `train_afib_model` (after 01, parallel with 02) |
+# MAGIC | `04_validate_and_promote` | **Gate:** score both challengers on `holdout`, check the thresholds, log the evaluation artifacts; both pass → `@champion` moves to them, else the job stops | serverless GPU (A10, AI v6) | SETUP → `validate_and_promote` (after 02 + 03) |
+# MAGIC | `05_serve_endpoints` | Create / update endpoints `<endpoint_prefix>_arr` + `<endpoint_prefix>_afib` at the champion versions (never one that serves another deployment's model), AI Gateway inference tables + usage tracking, the deployment path each endpoint took (express or a container image build) printed and tagged `deployment`, smoke query | standard serverless (environment 6) | SETUP → `serve_endpoints` (after 04) |
+# MAGIC | `06_generate_batch_data` | One day's new synthetic 12-lead ECGs + synthetic patient records, acquisition times spread over the day → `batch_data_12l_<YYYYMMDD>` | standard serverless (environment 6) | DAILY → `simulate_incoming_batch` (simulated incoming data, not real ingestion) |
+# MAGIC | `07_arr_triage` | Score all 12 leads with `bio_ecg12_arr@champion` on the driver → `arr_prob`, `arr_flag` → `arr_triaged_12l_<YYYYMMDD>` + that date's rows of `arr_triage_history_12l` | standard serverless (environment 6) | DAILY → `arr_triage` (after 06) |
+# MAGIC | `08_afib_classify` | Score the flagged rows with `bio_ecg12_afib@champion` on the driver → that date's rows of `dailyOrweekly_arr_afib_inference_12l` | standard serverless (environment 6) | DAILY → `afib_classify` (after 07) |
 # MAGIC
 # MAGIC Run the SETUP job first (and again to retrain): the DAILY job scores with the champion models.
 
@@ -87,9 +87,9 @@
 # MAGIC 100–160 bpm, so one heart-rate cut-off (about 95 bpm) calls about 99 % of ECGs right (99.7 % of
 # MAGIC the training dataset); it is not perfect because AFib's irregular beats measure below 100 bpm for
 # MAGIC about 2–5 % of AFib ECGs. Beat-to-beat irregularity separates AFib from Other (RR intervals vary
-# MAGIC ~20 % in AFib, ~3 % in sinus rhythm), and AFib also differs in more than rhythm: no P waves, a
+# MAGIC about 20 % in AFib, about 3 % in sinus rhythm), and AFib also differs in more than rhythm: no P waves, a
 # MAGIC fibrillatory baseline (f-waves) and more beat-to-beat amplitude scatter. So validation and
-# MAGIC hold-out metrics sit near ceiling (~1.0), and each model trains once with one fixed
+# MAGIC hold-out metrics sit near ceiling (about 1.0), and each model trains once with one fixed
 # MAGIC configuration (`TRAIN_PARAMS`), no hyperparameter search. This is a
 # MAGIC clean, synthetic **showcase of the MLOps cycle**, not a hard ML problem; the thresholds are
 # MAGIC engineering floors for this data, not clinical acceptance criteria.
@@ -155,12 +155,15 @@
 # MAGIC
 # MAGIC * **Batch path** (DAILY job): `07_` and `08_` load the champion versions from Unity Catalog and
 # MAGIC   score the day's batch on the driver (`scoring.score_driver_side`, as the gate does); they never
-# MAGIC   call the endpoints. They run on standard serverless with the ML v5 environment. Results land in
+# MAGIC   call the endpoints. They run on standard serverless environment 6. Results land in
 # MAGIC   `arr_triaged_12l_<date>`, `arr_triage_history_12l` and `dailyOrweekly_arr_afib_inference_12l`.
-# MAGIC * **Live path** (the app): every *Triage → Classify* click calls the serving endpoints, which log
-# MAGIC   each request and response to their AI Gateway inference tables `bio_ecg12_arr_payload` and
-# MAGIC   `bio_ecg12_afib_payload` (one 12-lead ECG is ~650 KB of JSON, inside the 1 MiB logging limit).
-# MAGIC   AI Gateway usage tracking also records every request in `system.serving.endpoint_usage`.
+# MAGIC * **Live path** (the app): every *Triage → Classify* click calls the serving endpoints, whose
+# MAGIC   requests and responses AI Gateway logs to their inference tables `bio_ecg12_arr_payload` and
+# MAGIC   `bio_ecg12_afib_payload`, with a delay (the docs say seconds for CPU endpoints such as these;
+# MAGIC   20 to 60 minutes in our tests; one 12-lead ECG is about 650 KB of JSON, inside the 1 MiB
+# MAGIC   logging limit; requests that end in an error may not be logged;
+# MAGIC   [inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)). AI Gateway
+# MAGIC   usage tracking also records the requests in `system.serving.endpoint_usage`.
 # MAGIC
 # MAGIC The AI/BI dashboard (`dashboards/ecg12_afib.lvdash.json`, generated by
 # MAGIC `dashboards/build_ecg_demo_dashboard.py`, deployed by the bundle) keeps them apart: a *Batch
@@ -183,6 +186,8 @@
 # MAGIC | `patient_info.py` | Synthetic, non-PII patient + acquisition record, fixed per `pseudo_patient_id`; heart rate measured from the ECG; acquisition times over the clinic day |
 # MAGIC | `scoring.py` | Resolve an alias to a concrete version (that version scores and is recorded); driver-side scoring + join for the gate and the daily batch |
 # MAGIC | `uc_io.py` | Re-run-safe Delta writes; Delta version + time-travel reads |
+# MAGIC | `tracking.py` | The SETUP job's one MLflow experiment, with its folder, made active before any run |
+# MAGIC | `deployment_path.py` | Which Model Serving path a served model took, express or a container image build, from its build log and the endpoint's events (`05_`) |
 # MAGIC
 # MAGIC The model classes (`ArrCNN`, `AfibCNN`, their pyfunc wrappers and input reshape) stay **inside**
 # MAGIC `02_` / `03_`, so MLflow pickles them by value and the serving endpoints load them without `common`.

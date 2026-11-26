@@ -44,7 +44,7 @@ the endpoints, so live requests show up in the request-log tables and batch scor
 | `deploy.sh` | Full install from a laptop (target `full`): build, validate, deploy, SETUP run, permissions, app start, embedding allowlist |
 | `resources/` | `ecg12_afib_setup.job.yml`, `ecg12_afib_daily.job.yml` (the jobs), `ecg12_afib.dashboard.yml` (the dashboard) |
 | `workflow/` | Notebooks `00_`–`08_` (below). Each puts `..` on `sys.path` and imports `common` |
-| `common/` | Shared code, single source of truth: `config.py` (names, `N_LEADS = 12`, aliases, training split + settings, validation thresholds, run date, the catalog/schema name check, the deployment identity, the MLflow experiment path check), `ecg_signal_gen.py` (12-lead generator), `training_data.py` (the persisted training dataset), `training.py` (PyTorch training loop, layer table), `evaluation.py` (metrics, the gate's threshold check, confusion counts, ROC / precision-recall curves, per-class table), `eval_plots.py` (the gate's evaluation figures), `ecg_plots.py` (sample-signal plots), `patient_info.py` (synthetic patient record), `scoring.py` (alias → version, driver-side scoring), `uc_io.py` (re-run-safe Delta writes, Delta versions, the schema-ownership record and check), `tracking.py` (the SETUP job's MLflow experiment, with its folder, made active) |
+| `common/` | Shared code, single source of truth: `config.py` (names, `N_LEADS = 12`, aliases, training split + settings, validation thresholds, run date, the catalog/schema name check, the deployment identity, the MLflow experiment path check), `ecg_signal_gen.py` (12-lead generator), `training_data.py` (the persisted training dataset), `training.py` (PyTorch training loop, layer table), `evaluation.py` (metrics, the gate's threshold check, confusion counts, ROC / precision-recall curves, per-class table), `eval_plots.py` (the gate's evaluation figures), `ecg_plots.py` (sample-signal plots), `patient_info.py` (synthetic patient record), `scoring.py` (alias → version, driver-side scoring), `uc_io.py` (re-run-safe Delta writes, Delta versions, the schema-ownership record and check), `tracking.py` (the SETUP job's MLflow experiment, with its folder, made active), `deployment_path.py` (express or container image build, from a served model's build log and the endpoint's events) |
 | `dashboards/` | `ecg12_afib.lvdash.json` (the dashboard the bundle deploys) and `build_ecg_demo_dashboard.py`, which generates it |
 | `app/` | APX app (React UI + FastAPI backend). `backend/common/` is a byte-identical copy of `common/{__init__,config,ecg_signal_gen,patient_info}.py`; the build fails if it drifts. Build with `app/build_from_lockfiles.sh`, see [`app/README.md`](../app/README.md) |
 | `dev/` | Developer tools, not deployed (excluded from bundle sync, outside the app wheel): `signal_variety/` checks how varied and how separable the generator's ECGs are; `tests/` holds optional local checks (see [Tests](../dev/tests/README.md)); see [`dev/README.md`](../dev/README.md) |
@@ -54,14 +54,14 @@ the endpoints, so live requests show up in the request-log tables and batch scor
 | Notebook | Job → task | Writes | Compute |
 |---|---|---|---|
 | `00_overview` | — | Docs: the whole flow on one page, the 12-lead legend | — |
-| `01_generate_training_data` | SETUP → `generate_training_data` | the schema if it does not exist; on the first run `ecg12_afib_deployment` (this deployment owns the schema; stops first if another one does); `training_data_12l` (`train` 600 / `val` 200 / `holdout` 200 ECGs by default) + sample plots | standard serverless |
-| `02_train_arr_model` | SETUP → `train_arr_model` (after 01) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v5) |
-| `03_train_afib_model` | SETUP → `train_afib_model` (after 01, parallel with 02) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_afib` → `@challenger` | serverless GPU (A10, AI v5) |
-| `04_validate_and_promote` | SETUP → `validate_and_promote` (after 02 + 03) | gate run (same experiment) with hold-out metrics + evaluation artifacts; both pass → `@champion` moves to the challengers, else the task fails | serverless GPU (A10, AI v5) |
-| `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `<endpoint_prefix>_arr`, `<endpoint_prefix>_afib` at `@champion` (stops if one already serves another deployment's model) + inference tables `<model>_payload` + AI Gateway usage tracking | standard serverless |
-| `06_generate_batch_data` | DAILY → `simulate_incoming_batch` | (stops first unless `ecg12_afib_deployment` names this deployment) `batch_data_12l_<YYYYMMDD>`: simulated incoming data, not real ingestion (acquisition times spread over the clinic day) + sample plot | standard serverless |
-| `07_arr_triage` | DAILY → `arr_triage` (after 06) | `arr_triaged_12l_<YYYYMMDD>` and that date's rows of `arr_triage_history_12l` (scored on the driver) | standard serverless, ML v5 |
-| `08_afib_classify` | DAILY → `afib_classify` (after 07) | that date's rows of `dailyOrweekly_arr_afib_inference_12l` (scored on the driver) | standard serverless, ML v5 |
+| `01_generate_training_data` | SETUP → `generate_training_data` | the schema if it does not exist; on the first run `ecg12_afib_deployment` (this deployment owns the schema; stops first if another one does); `training_data_12l` (`train` 600 / `val` 200 / `holdout` 200 ECGs by default) + sample plots | standard serverless, environment 6 |
+| `02_train_arr_model` | SETUP → `train_arr_model` (after 01) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_arr` → `@challenger` | serverless GPU (A10, AI v6) |
+| `03_train_afib_model` | SETUP → `train_afib_model` (after 01, parallel with 02) | MLflow run in the `mlflow_experiment` experiment (incl. the layer table); new version of `bio_ecg12_afib` → `@challenger` | serverless GPU (A10, AI v6) |
+| `04_validate_and_promote` | SETUP → `validate_and_promote` (after 02 + 03) | gate run (same experiment) with hold-out metrics + evaluation artifacts; both pass → `@champion` moves to the challengers, else the task fails | serverless GPU (A10, AI v6) |
+| `05_serve_endpoints` | SETUP → `serve_endpoints` (after 04) | endpoints `<endpoint_prefix>_arr`, `<endpoint_prefix>_afib` at `@champion` (stops if one already serves another deployment's model) + inference tables `<model>_payload` + AI Gateway usage tracking; prints each endpoint's deployment path and tags it `deployment` | standard serverless, environment 6 |
+| `06_generate_batch_data` | DAILY → `simulate_incoming_batch` | (stops first unless `ecg12_afib_deployment` names this deployment) `batch_data_12l_<YYYYMMDD>`: simulated incoming data, not real ingestion (acquisition times spread over the clinic day) + sample plot | standard serverless, environment 6 |
+| `07_arr_triage` | DAILY → `arr_triage` (after 06) | `arr_triaged_12l_<YYYYMMDD>` and that date's rows of `arr_triage_history_12l` (scored on the driver) | standard serverless, environment 6 |
+| `08_afib_classify` | DAILY → `afib_classify` (after 07) | that date's rows of `dailyOrweekly_arr_afib_inference_12l` (scored on the driver) | standard serverless, environment 6 |
 
 Every notebook takes `catalog_name` (required: the jobs pass the bundle's `catalog` variable; when
 you run a notebook by hand, type it into the widget) and `schema_name` (default `biosignals`); both
@@ -80,23 +80,32 @@ in one Delta transaction; `uc_io.write_date_slice` refuses any existing table wi
 ## Batch path vs live path
 
 - **Batch** (DAILY job): `07_` / `08_` resolve `champion` to a concrete version, load exactly that
-  version with `mlflow.pyfunc.load_model` and score the day's ~100 ECGs on the job's driver
+  version with `mlflow.pyfunc.load_model` and score the day's roughly 100 ECGs on the job's driver
   (`scoring.score_driver_side`, as the gate does), recording the version in `arr_model_info` /
   `afib_model_info`. The endpoints are not called. Results: `arr_triaged_12l_<date>`,
   `arr_triage_history_12l`, `dailyOrweekly_arr_afib_inference_12l`.
 - **Live** (the app): each *Triage → Classify* sends one ECG to the triage endpoint
   (`<endpoint_prefix>_arr`) and, when flagged, to the classify endpoint (`<endpoint_prefix>_afib`);
-  AI Gateway logs every request/response to `bio_ecg12_arr_payload` /
-  `bio_ecg12_afib_payload`. One 12-lead ECG is ~650 KB of JSON, inside the inference table's 1 MiB
-  logging limit; a request above 1 MiB is served but logged with `MAX_REQUEST_SIZE_EXCEEDED` and a
-  null payload, so `05_`'s smoke test and the app's warm-up pings also send one ECG per request.
-  So the app itself writes no table, but every ECG it scores is stored: each logged request holds
-  the whole ECG, and its response the scores. Anyone in `viewer_group` (default `users`) can use
+  AI Gateway logs the requests and responses to `bio_ecg12_arr_payload` /
+  `bio_ecg12_afib_payload`, with a delay: the docs say that for CPU custom-model endpoints such as
+  these the table is a view over a telemetry table and "rows are typically available within
+  seconds" (the "within 1 hour" best-effort delivery is for Foundation Model API, external-model and
+  agent endpoints), but in the tested deployments rows arrived 20 to 60 minutes after a request
+  (in the tested AWS deployment the `_payload` tables were plain Delta tables, not that view;
+  checked 2026-11-24). The docs also list gaps: a request or response over 1 MiB is
+  "logged as `null`", and for custom model endpoints "logs may not be recorded for any 4xx or 5xx
+  errors"
+  ([inference tables for serving endpoints](https://docs.databricks.com/aws/en/ai-gateway/inference-tables-serving-endpoints)). One 12-lead
+  ECG is about 650 KB of JSON, inside that 1 MiB logging limit; a request above 1 MiB is served but
+  logged with `MAX_REQUEST_SIZE_EXCEEDED` and a null payload, so `05_`'s smoke test and the app's
+  warm-up pings also send one ECG per request. So the app itself writes no table, but the tables
+  hold the ECGs from logged requests: each logged request holds the whole ECG, and its response
+  the scores. Anyone in `viewer_group` (default `users`) can use
   the app and so add rows. That is fine for this synthetic data; if you adapt the project to real
   data, treat the two payload tables as patient data (limit who can `SELECT` them, and narrow
   `viewer_group`).
-  AI Gateway usage tracking is on as well: a usage record for every request lands in the system
-  table `system.serving.endpoint_usage`, which only account admins can query unless one grants access.
+  AI Gateway usage tracking is on as well: usage records for the endpoints' requests land in the
+  system table `system.serving.endpoint_usage`, which only account admins can query unless one grants access.
 
 **Scale-to-zero and the app.** Both endpoints scale to zero when idle, and waking one took 89 s and
 130 s when this demo was tested. So every endpoint call from the app is bounded by
@@ -111,3 +120,64 @@ stops while the page is hidden, and shows a ready / waking / cold / error chip p
 warm-up ping is one single-ECG request per endpoint with `client_request_id = app-warmup`
 (`WARMUP_REQUEST_ID`), so it is one row in that endpoint's payload table, which the dashboard leaves
 out of its live tiles and counts separately. The pings use only the app's `CAN_QUERY` grant.
+
+**Express deployment (faster endpoint updates).** Model Serving has a faster way to start a custom
+model, [express deployment](https://docs.databricks.com/aws/en/machine-learning/model-serving/express-deployments):
+for an eligible model it prepares the model's Python environment once and reuses it, instead of
+building a new container image every time an endpoint is created or updated. On AWS and Azure it is
+automatic; there is nothing to switch on. In the docs' terms, a model is eligible when it was logged
+with MLflow from Databricks compute and its recorded runtime, Python version and dependencies are
+compatible with the serving compute; what can prevent it includes Git, URL, editable or
+package-index entries in its pip requirements, CUDA-tagged versions, a Conda-only environment and
+PySpark (exact pins are required only for torch packages on a GPU endpoint; these endpoints are
+CPU). This project avoids all of those, though we have not tested which part of its setup express
+needed. The notebooks that log, load or serve the models
+run one MLflow version, 3.18 (it records the serverless environment version with the model), and
+each installs it: `02_` to `04_` over the 3.13 that the AI Runtime environment 6 (AI v6) ships, and
+`05_`, `07_` and `08_` over the 3.12 that standard serverless environment 6 ships (`07_` and
+`08_` also install the models' torch 2.11.0, which environment 6 does not ship: its CPU build, on a
+`%pip` line of its own from PyTorch's CPU-only index, since PyPI's torch 2.11.0 for Linux is the CUDA
+build and brings about 20 nvidia / CUDA packages and triton a CPU task never uses; that index is in
+those notebooks' install only, not in the models' requirements, so it does not affect express
+deployment; a workspace whose serverless compute cannot reach `download.pytorch.org` needs that
+`--index-url=...` removed). No notebook
+installs a package version below the one its environment ships: an older databricks-sdk or protobuf
+than the environment's stops the Python kernel from restarting. And `02_` and `03_` log
+each model with an explicit list, `MODEL_PIP_REQUIREMENTS` in `common/config.py`: only mlflow,
+cloudpickle, numpy, pandas and torch, each at the exact version of the training environment (the
+model is pickled there and must load with the same versions; torch 2.11.0 without the environment's
+`+cu130` CUDA tag), instead of the list MLflow would work out from the notebook session. The first
+deployment of a model can still take longer while its environment is prepared. To see which path an
+endpoint took, read its events after a create or update (`databricks api get
+/api/2.0/serving-endpoints/<name>/events`): a *Container image creation* event means
+the standard path (when this demo was tested on that path, the image build took about 15 of the 21
+minutes an endpoint took to become ready); with express deployment that event is absent and
+*Model artifact preparation* events take its place. `05_` does that check itself once both endpoints
+are ready (`common/deployment_path.py`, from the served model's build log and the endpoint's
+events): it prints one line per endpoint, such as `bio_ecg12_arr-2: EXPRESS deployment (environment
+prepared in 4m00s; no container image build)`, and tags the endpoint `deployment` = `express`,
+`standard` or `unknown`. Only a finished build names the path: "Model artifact preparation
+completed successfully" for express, "Container image creation finished successfully" for standard;
+one that started and has not finished is `unknown`, also when an earlier attempt's build of the same
+kind finished (a completion counts only at or after the latest start). An update that keeps a served model reuses its
+prepared environment and adds no new events; its build log then still began "This environment was
+prepared ahead of time by express deployment" in our tests, which counts as express. `unknown`
+means the build log or the events could not be read (an API error, a timeout, an unexpected
+response), a build had not finished, or they named neither path, not that express was not used.
+Both reads are needed: we assume (no Databricks page says so) that express which falls back to an
+image build may still have written an express line to the build log, so a container image build,
+which shows only in the events, wins, and an express build log without readable events is
+`unknown`, not `express`.
+Each of those events carries the config version of its update, and only the served model's latest
+preparation or image build counts: an image built by an earlier, failed attempt does not make a
+later express preparation `standard`. When no event carries a config version, the timestamps
+decide: the latest start of a preparation or image build, and what follows it, counts. When the
+events cannot say which came last (both kinds under one reused config version, a config version on
+some events only, or, without config versions, a missing timestamp or two kinds of build starting
+at the same time), the path is `unknown`. Anything but `express` is a printed warning, not a failed
+task, because eligibility is Model Serving's decision and the endpoint serves either way.
+In the Serving UI the build log is under the endpoint's **Logs > Build logs** (pick the served
+model). Tested end to end on AWS and on Azure, with both endpoints on the express path; on Google
+Cloud the express deployment page still requires `env_pack`, which this project doesn't use, so
+expect the standard path there (not yet tested). More, including what to do when an endpoint falls
+back to the standard path: [Express deployment](express-deployment.md).

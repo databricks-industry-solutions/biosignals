@@ -34,6 +34,11 @@ classes and the same cycle still applies.
 [Configuration](docs/deploy.md#configuration). Give each deployment its own `schema`
 (`--var schema=<schema>`, default `biosignals`): the jobs stop rather than write into a schema
 another deployment owns ([One schema per deployment](docs/deploy.md#one-schema-per-deployment)).
+Instead of `--var` on every bundle command, you can copy
+[`variable-overrides.example.json`](variable-overrides.example.json) to
+`.databricks/bundle/<target>/variable-overrides.json` and fill it in
+([Variables in a file](docs/deploy.md#variables-in-a-file-instead-of---var)); `deploy.sh` reads
+the same file for the `full` target, and its options win over it.
 
 ```bash
 cd projects/ecg12-afib
@@ -46,8 +51,14 @@ databricks bundle run ecg12_afib_setup -p <profile> --var catalog=<catalog> --va
 ./deploy.sh -p <profile> --catalog <catalog> --warehouse-id <id>
 ```
 
+The dashboard's Ask Genie works once the dashboard has been published again after the DAILY job's
+first run: `deploy.sh --run-daily` does both; otherwise see [Ask Genie](docs/dashboard.md).
+
 The setup job takes about 30 to 60 minutes (GPU training, then endpoint creation). The project
 creates billable resources; see [Cost](docs/deploy.md#cost) and [Teardown](docs/deploy.md#teardown).
+
+New to the Databricks CLI? The [quickstart](docs/quickstart.md) walks through every step on macOS
+and Windows, from installing the tools to removing the demo.
 
 ## More detail
 
@@ -57,8 +68,11 @@ creates billable resources; see [Cost](docs/deploy.md#cost) and [Teardown](docs/
 | [Model lifecycle](docs/model-lifecycle.md) | Challenger, validation gate, champion; thresholds and evaluation charts |
 | [Data](docs/data.md) | The synthetic 12-lead signal and patient record |
 | [Dashboard](docs/dashboard.md) | Dashboard sections and the tables behind them |
+| [Quickstart](docs/quickstart.md) | Step-by-step deploy for macOS and Windows: tools, login, deploy, checks, teardown |
 | [Deploy](docs/deploy.md) | Settings, both deploy paths, permissions, cost, teardown |
+| [Express deployment](docs/express-deployment.md) | How the serving endpoints can start without a container image build, and how to check it |
 | [App](app/README.md) | Building the app |
 | [Developer tools](dev/README.md) | Analysis scripts and optional local checks |
+| [Changelog](CHANGELOG.md) | Notable changes, and what to do when upgrading |
 | [Future work](docs/future-work.md) | Ideas not built yet |
 | [Third-party licenses](docs/third-party-licenses.md) | Packages, versions, licenses and sources |
